@@ -252,5 +252,7 @@ class NtripClient:
             gga = self._gga_provider()
             if gga:
                 return gga.decode(errors="replace").strip()
+
+        logger.debug(f"[{self.base_id}] Aucun GGA rover disponible, envoi d'une GGA par défaut")
         # GGA par défaut (Paris) si pas de position connue
         return "$GPGGA,120000.00,4851.8350,N,00222.3200,E,1,08,1.0,42.0,M,47.3,M,,*5F"

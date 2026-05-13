@@ -184,6 +184,7 @@ class RtcmDecoder:
         self._use_pyrtcm = self._check_pyrtcm()
         mode = "pyrtcm" if self._use_pyrtcm else "décodeur interne"
         logger.info(f"RtcmDecoder initialisé — mode : {mode}")
+        print(store)
 
     @staticmethod
     def _check_pyrtcm() -> bool:
@@ -196,6 +197,7 @@ class RtcmDecoder:
     # ---- Point d'entrée ----
 
     def decode(self, base_id: str, frame: bytes):
+        print(frame)
         if len(frame) < 6:
             return
         if not self._verify_crc(frame):

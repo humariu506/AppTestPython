@@ -21,6 +21,7 @@ Usage :
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -67,6 +68,19 @@ def load_config(path: str) -> dict:
         sys.exit(1)
     with open(p, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    # Résolution des chemins RTKLIB relatifs au fichier de configuration
+    base_dir = p.parent
+    rtklib_cfg = cfg.get("rtklib")
+    if isinstance(rtklib_cfg, dict):
+        for key in ("rtkrcv_path", "rtkpost_path"):
+            val = rtklib_cfg.get(key)
+            if isinstance(val, str) and val:
+                expanded = os.path.expanduser(val)
+                if not os.path.isabs(expanded):
+                    rtklib_cfg[key] = str((base_dir / expanded).resolve())
+        cfg["rtklib"] = rtklib_cfg
+
     logger.info(f"Config chargée : {p}")
     return cfg
 
@@ -83,6 +97,14 @@ def start_real_sensor(cfg: dict, nmea_callback, gga_update_callback) -> threadin
         logger.error("pyserial non installé. Lancez : pip install pyserial")
         sys.exit(1)
 
+    ports = []
+    try:
+        from serial.tools import list_ports
+        ports = [p.device for p in list_ports.comports()]
+    except Exception:
+        ports = []
+
+    connected_event = threading.Event()
     sensor_cfg = cfg["sensor"]
     port    = sensor_cfg["port"]
     baud    = sensor_cfg["baudrate"]
@@ -90,8 +112,18 @@ def start_real_sensor(cfg: dict, nmea_callback, gga_update_callback) -> threadin
 
     def _read_loop():
         logger.info(f"Ouverture port série {port} @ {baud} baud")
+        if ports:
+            if port not in ports:
+                logger.warning(
+                    f"Port configuré {port} non détecté. Ports disponibles : {ports}"
+                )
+            else:
+                logger.info(f"Port {port} détecté sur le système")
+
         try:
             ser = serial.Serial(port, baud, timeout=timeout)
+            logger.info(f"Rover connecté sur {port}")
+            connected_event.set()
         except serial.SerialException as e:
             logger.error(f"Impossible d'ouvrir {port} : {e}")
             return
@@ -119,7 +151,7 @@ def start_real_sensor(cfg: dict, nmea_callback, gga_update_callback) -> threadin
 
     t = threading.Thread(target=_read_loop, name="sensor-usb", daemon=True)
     t.start()
-    return t
+    return t, connected_event
 
 
 def _parse_and_update_gga(gga_line: bytes, callback):
@@ -150,11 +182,12 @@ def _parse_and_update_gga(gga_line: bytes, callback):
 
 
 def start_real_ntrip(base_cfg: dict, credentials: dict,
-                     rtcm_callback, gga_provider) -> threading.Thread:
+                     rtcm_callback, gga_provider):
     """Lance un client NTRIP réel pour une balise."""
     from ntrip_client import NtripClient
     client = NtripClient(base_cfg, credentials, rtcm_callback, gga_provider)
-    return client.start()
+    thread = client.start()
+    return thread, client
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +217,8 @@ class NrtkApp:
 
         # Threads actifs
         self._threads: list[threading.Thread] = []
+        self._ntrip_clients = []
+        self._sensor_connected_event = threading.Event()
 
         # UI (initialisée avant le démarrage des threads pour le log)
         base_ids = [b["id"] for b in cfg["bases"]]
@@ -225,6 +260,17 @@ class NrtkApp:
                         last_msg_age=mb.last_msg_age,
                     )
                     break
+            else:
+                # Pas de mock : statut des clients NTRIP réels
+                for client in self._ntrip_clients:
+                    if client.base_id == base_id:
+                        self._ui.update_base_status(
+                            base_id,
+                            connected=client.connected,
+                            msg_count=client.msg_count,
+                            last_msg_age=client.last_msg_age,
+                        )
+                        break
 
     def _on_nmea(self, line: bytes):
         """Appelé à chaque trame NMEA du capteur."""
@@ -322,26 +368,49 @@ class NrtkApp:
     def _start_real(self):
         """Démarre capteur USB réel + 5 clients NTRIP réels."""
         # Capteur USB
-        t_sensor = start_real_sensor(
+        t_sensor, sensor_connected = start_real_sensor(
             cfg=self._cfg,
             nmea_callback=self._on_nmea,
             gga_update_callback=self._on_gga_position,
         )
         self._threads.append(t_sensor)
+        self._sensor_connected_event = sensor_connected
         logger.info(f"Capteur USB démarré : {self._cfg['sensor']['port']}")
+
+        # Vérifie la détection du rover après quelques secondes
+        def _check_sensor():
+            if self._sensor_connected_event.is_set():
+                logger.info(f"Rover détecté sur {self._cfg['sensor']['port']}")
+            else:
+                logger.warning(
+                    f"Rover non détecté sur {self._cfg['sensor']['port']} après démarrage. "
+                    "Vérifiez le câble, le port COM et les paramètres du capteur."
+                )
+        threading.Timer(5.0, _check_sensor).start()
 
         # 5 clients NTRIP
         credentials = self._cfg["ntrip"]
         for base_cfg in self._cfg["bases"]:
-            t = start_real_ntrip(
+            t, client = start_real_ntrip(
                 base_cfg=base_cfg,
                 credentials=credentials,
                 rtcm_callback=self._on_rtcm,
                 gga_provider=self._get_gga,
             )
             self._threads.append(t)
+            self._ntrip_clients.append(client)
             logger.info(f"NTRIP démarré : {base_cfg['id']} → "
                         f"{base_cfg['host']}:{base_cfg['port']}/{base_cfg['mountpoint']}")
+
+        threading.Timer(8.0, self._log_ntrip_status).start()
+
+    def _log_ntrip_status(self):
+        if not self._ntrip_clients:
+            return
+        for client in self._ntrip_clients:
+            status = "connecté" if client.connected else "non connecté"
+            detail = f" ({client.last_error})" if client.last_error else ""
+            logger.info(f"NTRIP statut {client.base_id} : {status}{detail}")
 
     # ------------------------------------------------------------------
     # Arrêt propre
@@ -352,6 +421,11 @@ class NrtkApp:
         self._vrs.stop()
         for mb in self._mock_bases:
             mb.stop()
+        for client in self._ntrip_clients:
+            try:
+                client.stop()
+            except Exception:
+                pass
         logger.info("Arrêt terminé.")
 
     # ------------------------------------------------------------------

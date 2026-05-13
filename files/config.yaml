@@ -3,10 +3,10 @@
 
 # --- Capteur GNSS ---
 sensor:
-  port: "/dev/ttyUSB0"          # Linux — changer en "COM3" sous Windows
+  port: "COM4"          # Linux — changer en "COM3" sous Windows
   baudrate: 115200
   timeout: 2.0
-  mock: true                    # true = données simulées, false = capteur réel
+  mock: false           # true = données simulées, false = capteur réel
 
 # --- Balises Centipede (NTRIP) ---
 # Choisir 5 balises proches de votre position de travail
@@ -14,35 +14,35 @@ sensor:
 
 bases:
   - id: "81"
-    host: "caster.centipede.fr"
+    host: "crtk.net"
     port: 2101
     mountpoint: "OUIL"          # Remplacer par les mountpoints réels
     lat: 48.9229               # Latitude approx. de la balise
     lon: 2.1776
     alt: 86.5613
   - id: "1220"
-    host: "caster.centipede.fr"
+    host: "crtk.net"
     port: 2101
     mountpoint: "IPGP"
     lat: 48.8449
     lon: 2.3563
     alt: 104.6638
   - id: "825"
-    host: "caster.centipede.fr"
+    host: "crtk.net"
     port: 2101
     mountpoint: "RICE"
     lat: 48.7815
     lon: 2.4300
     alt: 87.0478
   - id: "383"
-    host: "caster.centipede.fr"
+    host: "crtk.net"
     port: 2101
     mountpoint: "GEODATA2"
     lat: 48.8411
     lon: 2.5873
     alt: 160.528
   - id: "351"
-    host: "caster.centipede.fr"
+    host: "crtk.net"
     port: 2101
     mountpoint: "CDFX"
     lat: 48.7070
@@ -58,9 +58,11 @@ ntrip:
 # --- RTKLIB ---
 rtklib:
   # Chemin vers rtkrcv ou rtkpost (RTKLIB compilé)
-  # Téléchargement : https://github.com/tomojitakasu/RTKLIB
-  rtkrcv_path: "f:/AppFixed_v3/AppTestPython/RTKLIB-master/app/rtkrcv"
-  rtkpost_path: "f:/AppFixed_v3/AppTestPython/RTKLIB-master/app/rtkpost"
+  # Chemins relatifs à ce fichier config.yaml pour rester portable.
+  # Le dossier RTKLIB-master est au même niveau que le dossier files.
+  # Exemple Windows compilé : "../RTKLIB-master/app/rtkpost/rtkpost.exe"
+  rtkrcv_path: "../RTKLIB-master/app/rtkrcv/rtkrcv"
+  rtkpost_path: "../RTKLIB-master/app/rtkpost/rtkpost"
   # Mode de positionnement : kinematic = RTK temps réel
   mode: "kinematic"
   # Fréquences : 1=L1 seulement, 2=L1+L2 (selon capteur)
