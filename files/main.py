@@ -205,7 +205,10 @@ class NrtkApp:
     def __init__(self, cfg: dict, force_real: bool = False, no_ui: bool = False):
         self._cfg      = cfg
         self._no_ui    = no_ui
-        self._use_mock = cfg["sensor"].get("mock", True) and not force_real
+        
+        self._mock_sensor = cfg["sensor"].get("mock", True) and not force_real
+        # NTrip mock hérite du paramètre sensor par défaut pour la rétrocompatibilité
+        self._mock_ntrip = cfg.get("ntrip", {}).get("mock", self._mock_sensor) and not force_real
 
         # Shared state
         self._store   = ObservationStore(max_age=5.0)
@@ -313,13 +316,23 @@ class NrtkApp:
     # ------------------------------------------------------------------
 
     def start(self):
-        mode = "MOCK" if self._use_mock else "RÉEL"
+        if self._mock_sensor and self._mock_ntrip:
+            mode = "MOCK COMPLET"
+        elif not self._mock_sensor and not self._mock_ntrip:
+            mode = "RÉEL COMPLET"
+        else:
+            mode = "HYBRIDE"
         logger.info(f"═══ Démarrage NRTK — mode {mode} ═══")
 
-        if self._use_mock:
-            self._start_mock()
+        if self._mock_sensor:
+            self._start_mock_sensor()
         else:
-            self._start_real()
+            self._start_real_sensor()
+
+        if self._mock_ntrip:
+            self._start_mock_ntrip()
+        else:
+            self._start_real_ntrip()
 
         # Démarrage moteur VRS
         t_vrs = self._vrs.start()
@@ -329,13 +342,12 @@ class NrtkApp:
         # Statut de démarrage
         if self._ui:
             self._ui.log(
-                f"Démarrage {'mock' if self._use_mock else 'réel'} — "
-                f"{len(self._cfg['bases'])} bases NTRIP",
+                f"Démarrage ({mode}) — {len(self._cfg['bases'])} bases NTRIP",
                 "info"
             )
 
-    def _start_mock(self):
-        """Démarre capteur mock + 5 bases mock."""
+    def _start_mock_sensor(self):
+        """Démarre le capteur mock."""
         mock_cfg = self._cfg["mock"]
 
         # Capteur mock
@@ -352,6 +364,10 @@ class NrtkApp:
         self._threads.append(t_sensor)
         logger.info("Capteur mock démarré")
 
+    def _start_mock_ntrip(self):
+        """Démarre les 5 bases mock."""
+        mock_cfg = self._cfg["mock"]
+
         # 5 bases mock
         for base_cfg in self._cfg["bases"]:
             mb = MockNtripBase(
@@ -365,9 +381,8 @@ class NrtkApp:
             self._threads.append(t)
             logger.info(f"Base mock démarrée : {base_cfg['id']}")
 
-    def _start_real(self):
-        """Démarre capteur USB réel + 5 clients NTRIP réels."""
-        # Capteur USB
+    def _start_real_sensor(self):
+        """Démarre le capteur USB réel."""
         t_sensor, sensor_connected = start_real_sensor(
             cfg=self._cfg,
             nmea_callback=self._on_nmea,
@@ -388,7 +403,8 @@ class NrtkApp:
                 )
         threading.Timer(5.0, _check_sensor).start()
 
-        # 5 clients NTRIP
+    def _start_real_ntrip(self):
+        """Démarre les 5 clients NTRIP réels."""
         credentials = self._cfg["ntrip"]
         for base_cfg in self._cfg["bases"]:
             t, client = start_real_ntrip(

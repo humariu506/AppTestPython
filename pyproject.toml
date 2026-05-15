@@ -1,0 +1,10 @@
+[project]
+name = "apptestpython"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.4.4",
+    "pyrtcm>=1.1.12",
+    "pyserial>=3.5",
+    "pyyaml>=6.0.3",
+]

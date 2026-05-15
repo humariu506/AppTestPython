@@ -3,10 +3,10 @@
 
 # --- Capteur GNSS ---
 sensor:
-  port: "COM4"          # Linux — changer en "COM3" sous Windows
+  port: "COM6"          # Linux — changer en "COM3" sous Windows
   baudrate: 115200
   timeout: 2.0
-  mock: false           # true = données simulées, false = capteur réel
+  mock: false # true = données simulées, false = capteur réel
 
 # --- Balises Centipede (NTRIP) ---
 # Choisir 5 balises proches de votre position de travail
@@ -51,6 +51,7 @@ bases:
 
 # --- NTRIP credentials ---
 ntrip:
+  mock: false                   # true = bases simulées, false = vraies bases (mode hybride possible)
   user: "centipede"
   password: "centipede"
   version: 2                    # NTRIP v2 recommandé
@@ -61,8 +62,8 @@ rtklib:
   # Chemins relatifs à ce fichier config.yaml pour rester portable.
   # Le dossier RTKLIB-master est au même niveau que le dossier files.
   # Exemple Windows compilé : "../RTKLIB-master/app/rtkpost/rtkpost.exe"
-  rtkrcv_path: "../RTKLIB-master/app/rtkrcv/rtkrcv"
-  rtkpost_path: "../RTKLIB-master/app/rtkpost/rtkpost"
+  rtkrcv_path: "../RTKLIB-master/app/rtkrcv/rtkrcv.c"
+  rtkpost_path: "../RTKLIB-master/app/rtkpost/rtkpost.cpp"
   # Mode de positionnement : kinematic = RTK temps réel
   mode: "kinematic"
   # Fréquences : 1=L1 seulement, 2=L1+L2 (selon capteur)
