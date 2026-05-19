@@ -3,10 +3,10 @@
 
 # --- Capteur GNSS ---
 sensor:
-  port: "COM6"          # Linux — changer en "COM3" sous Windows
+  port: "COM4"          # Linux — changer en "COMX" sous Windows
   baudrate: 115200
   timeout: 2.0
-  mock: false # true = données simulées, false = capteur réel
+  mock: true # true = données simulées, false = capteur réel
 
 # --- Balises Centipede (NTRIP) ---
 # Choisir 5 balises proches de votre position de travail
@@ -79,12 +79,12 @@ rtklib:
 
 # --- Mock ---
 mock:
-  # Position simulée du capteur (centre de la zone des 5 balises)
+  # Position simulée du capteur
   rover_lat: 48.8300
   rover_lon: 2.3700
   rover_alt: 42.0
   # Bruit simulé sur la position brute (mètres)
-  position_noise: 3.5
+  position_noise: 0.035
   # Cadence NMEA (Hz)
   nmea_rate: 1
   # Cadence RTCM par base (Hz)

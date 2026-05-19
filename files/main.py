@@ -44,10 +44,22 @@ from ui import NrtkUI
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+log_filename = f"nrtk_log_{time.strftime('%Y%m%d_%H%M%S')}.log"
+log_filepath = Path(__file__).resolve().parent / "logs" / log_filename
+
+file_handler = logging.FileHandler(log_filepath, encoding="utf-8")
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s", datefmt="%H:%M:%S")
+file_handler.setFormatter(file_formatter)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)-20s  %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        file_handler
+    ]
 )
 logger = logging.getLogger("main")
 
@@ -224,10 +236,10 @@ class NrtkApp:
         self._sensor_connected_event = threading.Event()
 
         # UI (initialisée avant le démarrage des threads pour le log)
-        base_ids = [b["id"] for b in cfg["bases"]]
+        base_dict = {b["id"]: f"{b.get('mountpoint', '')} - {b['id']}" for b in cfg["bases"]}
         if not no_ui:
             self._ui = NrtkUI(
-                base_ids=base_ids,
+                base_dict=base_dict,
                 update_rate_ms=cfg.get("ui", {}).get("update_rate_ms", 500),
             )
         else:
@@ -456,6 +468,7 @@ class NrtkApp:
                 time.sleep(1)
         except KeyboardInterrupt:
             self.stop()
+            print(f"\n[INFO] L'application s'est arrêtée. Le journal a été enregistré dans le fichier :\n[INFO] {log_filepath.resolve()}")
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +514,7 @@ def main():
     def _signal_handler(sig, frame):
         logger.info("Signal d'arrêt reçu")
         app.stop()
+        print(f"\n[INFO] L'application s'est arrêtée. Le journal a été enregistré dans le fichier :\n[INFO] {log_filepath.resolve()}")
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  _signal_handler)
@@ -517,6 +531,7 @@ def main():
             app._ui.run()
         finally:
             app.stop()
+            print(f"\n[INFO] L'application s'est arrêtée. Le journal a été enregistré dans le fichier :\n[INFO] {log_filepath.resolve()}")
 
 
 def _check_dependencies():

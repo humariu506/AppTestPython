@@ -78,15 +78,16 @@ class NrtkUI:
         ui.run()                             # bloque (mainloop)
     """
 
-    def __init__(self, base_ids: list[str], update_rate_ms: int = 500):
-        self._base_ids       = base_ids
+    def __init__(self, base_dict: dict[str, str], update_rate_ms: int = 500):
+        self._base_dict      = base_dict
+        self._base_ids       = list(base_dict.keys())
         self._update_rate_ms = update_rate_ms
         self._lock           = threading.Lock()
 
         # État interne (mis à jour depuis threads externes)
         self._latest_result: Optional[PositionResult] = None
         self._base_statuses: dict[str, BaseStatus] = {
-            bid: BaseStatus(bid) for bid in base_ids
+            bid: BaseStatus(bid) for bid in self._base_ids
         }
         self._start_time = time.time()
         self._n_fixes    = 0
@@ -239,7 +240,8 @@ class NrtkUI:
             # Labels
             inner = tk.Frame(card, bg=BG_CARD)
             inner.pack(side="left", pady=4)
-            name_lbl = tk.Label(inner, text=bid, bg=BG_CARD, fg=TEXT_MAIN,
+            display_name = self._base_dict.get(bid, bid)
+            name_lbl = tk.Label(inner, text=display_name, bg=BG_CARD, fg=TEXT_MAIN,
                                  font=f_small, anchor="w")
             name_lbl.pack(anchor="w")
             info_lbl = tk.Label(inner, text="Déconnecté", bg=BG_CARD,
@@ -348,6 +350,8 @@ class NrtkUI:
 
     def log(self, message: str, level: str = "info"):
         """Ajoute une ligne dans le journal (peut être appelé depuis n'importe quel thread)."""
+        import logging
+        logging.getLogger("ui").info(message)
         ts  = time.strftime("%H:%M:%S")
         tag = level.lower()
         self.root.after(0, self._append_log, f"[{ts}] {message}\n", tag)
