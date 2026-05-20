@@ -101,70 +101,7 @@ def load_config(path: str) -> dict:
 # Composants réels (capteur USB + NTRIP)
 # ---------------------------------------------------------------------------
 
-def start_real_sensor(cfg: dict, nmea_callback, gga_update_callback) -> threading.Thread:
-    """Lance la lecture série du capteur GNSS USB."""
-    try:
-        import serial
-    except ImportError:
-        logger.error("pyserial non installé. Lancez : pip install pyserial")
-        sys.exit(1)
-
-    ports = []
-    try:
-        from serial.tools import list_ports
-        ports = [p.device for p in list_ports.comports()]
-    except Exception:
-        ports = []
-
-    connected_event = threading.Event()
-    sensor_cfg = cfg["sensor"]
-    port    = sensor_cfg["port"]
-    baud    = sensor_cfg["baudrate"]
-    timeout = sensor_cfg.get("timeout", 2.0)
-
-    def _read_loop():
-        logger.info(f"Ouverture port série {port} @ {baud} baud")
-        if ports:
-            if port not in ports:
-                logger.warning(
-                    f"Port configuré {port} non détecté. Ports disponibles : {ports}"
-                )
-            else:
-                logger.info(f"Port {port} détecté sur le système")
-
-        try:
-            ser = serial.Serial(port, baud, timeout=timeout)
-            logger.info(f"Rover connecté sur {port}")
-            connected_event.set()
-        except serial.SerialException as e:
-            logger.error(f"Impossible d'ouvrir {port} : {e}")
-            return
-
-        buffer = b""
-        last_gga = [None]
-
-        while True:
-            try:
-                chunk = ser.read(256)
-            except serial.SerialException as e:
-                logger.error(f"Erreur lecture série : {e}")
-                time.sleep(1)
-                continue
-
-            buffer += chunk
-            while b"\r\n" in buffer:
-                line, buffer = buffer.split(b"\r\n", 1)
-                line = line + b"\r\n"
-                nmea_callback(line)
-
-                if line.startswith(b"$GPGGA") or line.startswith(b"$GNGGA"):
-                    last_gga[0] = line
-                    _parse_and_update_gga(line, gga_update_callback)
-
-    t = threading.Thread(target=_read_loop, name="sensor-usb", daemon=True)
-    t.start()
-    return t, connected_event
-
+# Le capteur réel est désormais géré par serial_manager.py
 
 def _parse_and_update_gga(gga_line: bytes, callback):
     """Parse rapidement une trame GGA et extrait lat/lon/alt."""
@@ -234,6 +171,7 @@ class NrtkApp:
         self._threads: list[threading.Thread] = []
         self._ntrip_clients = []
         self._sensor_connected_event = threading.Event()
+        self._serial_manager = None
 
         # UI (initialisée avant le démarrage des threads pour le log)
         base_dict = {b["id"]: f"{b.get('mountpoint', '')} - {b['id']}" for b in cfg["bases"]}
@@ -262,6 +200,12 @@ class NrtkApp:
     def _on_rtcm(self, base_id: str, frame: bytes):
         """Appelé à chaque trame RTCM reçue d'une base."""
         self._decoder.decode(base_id, frame)
+
+        # Pont direct RTCM
+        vrs_enabled = self._cfg.get("vrs", {}).get("enabled", True)
+        if not self._mock_sensor and self._serial_manager and not vrs_enabled:
+            if self._cfg["bases"] and base_id == self._cfg["bases"][0]["id"]:
+                self._serial_manager.write_data(frame)
 
         # Mise à jour statut UI
         if self._ui:
@@ -303,25 +247,66 @@ class NrtkApp:
 
     def _on_position_result(self, result: PositionResult):
         """Reçoit chaque résultat du moteur VRS."""
-        if self._ui:
+        if self._mock_sensor and self._ui:
             self._ui.update_position(result)
 
+        # Envoi des corrections RTCM vers le port série si capteur réel
+        vrs_enabled = self._cfg.get("vrs", {}).get("enabled", True)
+        if not self._mock_sensor and self._serial_manager and result.vrs_rtcm and vrs_enabled:
+            self._serial_manager.write_data(result.vrs_rtcm)
+
         # Log console
-        ts  = time.strftime("%H:%M:%S")
+        if self._mock_sensor:
+            ts  = time.strftime("%H:%M:%S")
+            msg = (f"[{result.fix_status:6s}] "
+                   f"Lat={result.lat:+.8f}  Lon={result.lon:+.8f}  "
+                   f"Alt={result.alt:+.3f}m  "
+                   f"σH={result.sigma_h:.3f}m  "
+                   f"Bases={result.n_bases_used}  Sats={result.n_sats_used}")
+
+            logger.info(msg)
+
+            if self._ui:
+                level_map = {
+                    "FIX": "fix", "FLOAT": "float",
+                    "SINGLE": "warn", "NONE": "error"
+                }
+                self._ui.log(msg, level_map.get(result.fix_status, "info"))
+
+    def _on_real_sensor_ui_update(self, lat: float, lon: float, alt: float, fix_quality: int, num_sats: int, hdop: float):
+        """Mise à jour de l'UI à partir du NMEA réel du UM980."""
+        if not self._ui or self._mock_sensor:
+            return
+
+        fix_map = {0: "NONE", 1: "SINGLE", 2: "FLOAT", 4: "FIX", 5: "FLOAT"}
+        fix_status = fix_map.get(fix_quality, "NONE")
+
+        result = PositionResult(
+            timestamp=time.time(),
+            lat=lat, lon=lon, alt=alt,
+            fix_status=fix_status,
+            n_sats_used=num_sats,
+            pdop=hdop,
+            sigma_h=hdop * 1.5,
+            sigma_v=hdop * 2.0
+        )
+
+        if self._vrs and self._vrs.last_result:
+            result.vrs_lat = self._vrs.last_result.vrs_lat
+            result.vrs_lon = self._vrs.last_result.vrs_lon
+            result.vrs_alt = self._vrs.last_result.vrs_alt
+            result.n_bases_used = self._vrs.last_result.n_bases_used
+
+        self._ui.update_position(result)
+
+        ts = time.strftime("%H:%M:%S")
         msg = (f"[{result.fix_status:6s}] "
                f"Lat={result.lat:+.8f}  Lon={result.lon:+.8f}  "
                f"Alt={result.alt:+.3f}m  "
-               f"σH={result.sigma_h:.3f}m  "
-               f"Bases={result.n_bases_used}  Sats={result.n_sats_used}")
-
+               f"Sats={result.n_sats_used}")
         logger.info(msg)
-
-        if self._ui:
-            level_map = {
-                "FIX": "fix", "FLOAT": "float",
-                "SINGLE": "warn", "NONE": "error"
-            }
-            self._ui.log(msg, level_map.get(result.fix_status, "info"))
+        level_map = {"FIX": "fix", "FLOAT": "float", "SINGLE": "warn", "NONE": "error"}
+        self._ui.log(msg, level_map.get(result.fix_status, "info"))
 
     # ------------------------------------------------------------------
     # Démarrage
@@ -394,26 +379,29 @@ class NrtkApp:
             logger.info(f"Base mock démarrée : {base_cfg['id']}")
 
     def _start_real_sensor(self):
-        """Démarre le capteur USB réel."""
-        t_sensor, sensor_connected = start_real_sensor(
-            cfg=self._cfg,
-            nmea_callback=self._on_nmea,
-            gga_update_callback=self._on_gga_position,
-        )
-        self._threads.append(t_sensor)
-        self._sensor_connected_event = sensor_connected
-        logger.info(f"Capteur USB démarré : {self._cfg['sensor']['port']}")
+        """Démarre le capteur USB réel via SerialManager."""
+        from serial_manager import SerialManager
+        self._serial_manager = SerialManager(self._cfg["sensor"])
+        self._serial_manager.add_nmea_callback(self._on_nmea)
+        self._serial_manager.add_gga_callback(self._on_gga_position)
+        self._serial_manager.add_nmea_ui_callback(self._on_real_sensor_ui_update)
 
-        # Vérifie la détection du rover après quelques secondes
-        def _check_sensor():
-            if self._sensor_connected_event.is_set():
-                logger.info(f"Rover détecté sur {self._cfg['sensor']['port']}")
-            else:
-                logger.warning(
-                    f"Rover non détecté sur {self._cfg['sensor']['port']} après démarrage. "
-                    "Vérifiez le câble, le port COM et les paramètres du capteur."
-                )
-        threading.Timer(5.0, _check_sensor).start()
+        if self._serial_manager.start():
+            self._sensor_connected_event = self._serial_manager.connected_event
+            logger.info(f"Capteur USB démarré : {self._cfg['sensor']['port']}")
+
+            # Vérifie la détection du rover après quelques secondes
+            def _check_sensor():
+                if self._sensor_connected_event.is_set():
+                    logger.info(f"Rover détecté sur {self._cfg['sensor']['port']}")
+                else:
+                    logger.warning(
+                        f"Rover non détecté sur {self._cfg['sensor']['port']} après démarrage. "
+                        "Vérifiez le câble, le port COM et les paramètres du capteur."
+                    )
+            threading.Timer(5.0, _check_sensor).start()
+        else:
+            logger.error("Échec du démarrage de SerialManager.")
 
     def _start_real_ntrip(self):
         """Démarre les 5 clients NTRIP réels."""
@@ -454,6 +442,8 @@ class NrtkApp:
                 client.stop()
             except Exception:
                 pass
+        if self._serial_manager:
+            self._serial_manager.stop()
         logger.info("Arrêt terminé.")
 
     # ------------------------------------------------------------------

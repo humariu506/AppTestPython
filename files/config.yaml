@@ -51,7 +51,7 @@ bases:
 
 # --- NTRIP credentials ---
 ntrip:
-  mock: false                   # true = bases simulées, false = vraies bases (mode hybride possible)
+  mock: false                  # true = bases simulées, false = vraies bases (mode hybride possible)
   user: "centipede"
   password: "centipede"
   version: 2                    # NTRIP v2 recommandé
@@ -76,6 +76,10 @@ rtklib:
   ar_ratio: 3.0
   # Timeout fix (secondes)
   fix_timeout: 60
+
+# --- VRS ---
+vrs:
+  enabled: false  # true = activer le moteur VRS, false = Pont direct RTCM de la 1ère base vers le UM980
 
 # --- Mock ---
 mock:

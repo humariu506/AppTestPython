@@ -184,6 +184,9 @@ class NrtkUI:
             ("Latitude  (°N)", "_lbl_lat"),
             ("Longitude (°E)", "_lbl_lon"),
             ("Altitude  (m)",  "_lbl_alt"),
+            ("VRS Lat   (°N)", "_lbl_vrs_lat"),
+            ("VRS Lon   (°E)", "_lbl_vrs_lon"),
+            ("VRS Alt   (m)",  "_lbl_vrs_alt"),
         ]):
             tk.Label(coords_frame, text=label, bg=BG_CARD, fg=TEXT_LABEL,
                      font=f_label, width=14, anchor="w").grid(
@@ -312,6 +315,10 @@ class NrtkUI:
             self._lbl_lat.config(text=f"{result.lat:+.8f}", fg=color)
             self._lbl_lon.config(text=f"{result.lon:+.8f}", fg=color)
             self._lbl_alt.config(text=f"{result.alt:+.3f}", fg=color)
+
+            self._lbl_vrs_lat.config(text=f"{result.vrs_lat:+.8f}", fg=TEXT_DIM)
+            self._lbl_vrs_lon.config(text=f"{result.vrs_lon:+.8f}", fg=TEXT_DIM)
+            self._lbl_vrs_alt.config(text=f"{result.vrs_alt:+.3f}", fg=TEXT_DIM)
 
             self._lbl_nsats.config(text=str(result.n_sats_used))
             self._lbl_nbases.config(text=str(result.n_bases_used))

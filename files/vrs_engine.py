@@ -67,6 +67,7 @@ class PositionResult:
     vrs_lat: float    = 0.0       # position VRS synthétisée
     vrs_lon: float    = 0.0
     vrs_alt: float    = 0.0
+    vrs_rtcm: bytes   = b""       # flux RTCM généré pour le rover
 
     @property
     def fix_color(self) -> str:
@@ -527,6 +528,7 @@ class VrsEngine:
             self._publish(PositionResult(
                 timestamp=time.time(), lat=r_lat, lon=r_lon, alt=r_alt,
                 fix_status="NONE",
+                vrs_lat=r_lat, vrs_lon=r_lon, vrs_alt=r_alt
             ))
             return
 
@@ -537,6 +539,7 @@ class VrsEngine:
                 timestamp=time.time(), lat=r_lat, lon=r_lon, alt=r_alt,
                 fix_status="SINGLE", n_bases_used=n_bases,
                 sigma_h=3.0, sigma_v=5.0,
+                vrs_lat=r_lat, vrs_lon=r_lon, vrs_alt=r_alt
             ))
             return
 
@@ -547,6 +550,7 @@ class VrsEngine:
                                     corrections, n_bases)
         result.n_bases_used = n_bases
         result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt
+        result.vrs_rtcm = vrs_rtcm
 
         self._last_result = result
         self._publish(result)
