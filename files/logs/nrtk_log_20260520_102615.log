@@ -1,0 +1,32 @@
+10:26:15  INFO      main                  Config chargée : C:\Users\User-lab\Documents\ProjetsCode\AppTestPython\files\config.yaml
+10:26:15  WARNING   main                  [OPTIONNEL] pyrtcm absent — Optionnel — décodage RTCM amélioré
+10:26:15  INFO      rtcm_decoder          RtcmDecoder initialisé — mode : décodeur interne
+10:26:16  INFO      vrs_engine            RTKLIB disponible ✓
+10:26:16  INFO      main                  ═══ Démarrage NRTK — mode HYBRIDE ═══
+10:26:16  INFO      main                  Capteur mock démarré
+10:26:16  INFO      ntrip_client          [81] Connexion à crtk.net:2101/OUIL
+10:26:16  INFO      main                  NTRIP démarré : 81 → crtk.net:2101/OUIL
+10:26:16  INFO      ntrip_client          [1220] Connexion à crtk.net:2101/IPGP
+10:26:16  INFO      main                  NTRIP démarré : 1220 → crtk.net:2101/IPGP
+10:26:16  INFO      ntrip_client          [825] Connexion à crtk.net:2101/RICE
+10:26:16  INFO      main                  NTRIP démarré : 825 → crtk.net:2101/RICE
+10:26:16  INFO      ntrip_client          [383] Connexion à crtk.net:2101/GEODATA2
+10:26:16  INFO      main                  NTRIP démarré : 383 → crtk.net:2101/GEODATA2
+10:26:16  INFO      ntrip_client          [351] Connexion à crtk.net:2101/CDFX
+10:26:16  INFO      main                  NTRIP démarré : 351 → crtk.net:2101/CDFX
+10:26:16  INFO      main                  [NONE  ] Lat=+48.82999960  Lon=+2.37000073  Alt=+41.987m  σH=999.000m  Bases=0  Sats=0
+10:26:16  INFO      ui                    [NONE  ] Lat=+48.82999960  Lon=+2.37000073  Alt=+41.987m  σH=999.000m  Bases=0  Sats=0
+10:26:16  INFO      main                  Moteur VRS démarré
+10:26:16  INFO      ui                    Démarrage (HYBRIDE) — 5 bases NTRIP
+10:26:16  INFO      ui                    Interface démarrée — en attente de données…
+10:26:17  INFO      main                  [NONE  ] Lat=+48.82999968  Lon=+2.37000050  Alt=+42.069m  σH=999.000m  Bases=0  Sats=0
+10:26:17  INFO      ui                    [NONE  ] Lat=+48.82999968  Lon=+2.37000050  Alt=+42.069m  σH=999.000m  Bases=0  Sats=0
+10:26:18  INFO      main                  [NONE  ] Lat=+48.83000015  Lon=+2.37000068  Alt=+41.950m  σH=999.000m  Bases=0  Sats=0
+10:26:18  INFO      ui                    [NONE  ] Lat=+48.83000015  Lon=+2.37000068  Alt=+41.950m  σH=999.000m  Bases=0  Sats=0
+10:26:18  INFO      main                  Arrêt des composants…
+10:26:18  INFO      main                  Arrêt terminé.
+10:26:24  INFO      main                  NTRIP statut 81 : non connecté
+10:26:24  INFO      main                  NTRIP statut 1220 : non connecté
+10:26:24  INFO      main                  NTRIP statut 825 : non connecté
+10:26:24  INFO      main                  NTRIP statut 383 : non connecté
+10:26:24  INFO      main                  NTRIP statut 351 : non connecté
