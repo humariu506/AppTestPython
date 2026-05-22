@@ -66,6 +66,7 @@ def make_gga(lat: float, lon: float, alt: float,
     """
     Génère une trame NMEA GGA.
     fix_quality : 0=invalid, 1=GPS, 2=DGPS, 4=RTK fix, 5=RTK float
+    La séparation géoïdale est lue depuis RAF20 si disponible.
     """
     now = datetime.now(timezone.utc)
     time_str = now.strftime("%H%M%S.%f")[:10]
@@ -73,8 +74,20 @@ def make_gga(lat: float, lon: float, alt: float,
     lat_str, lat_hemi = _dd_to_nmea(lat, is_lat=True)
     lon_str, lon_hemi = _dd_to_nmea(lon, is_lat=False)
 
+    # Séparation géoïdale depuis RAF20 (ou valeur par défaut)
+    geoid_sep = 47.3
+    try:
+        from geoid import get_geoid
+        geoid = get_geoid()
+        if geoid and geoid.loaded:
+            n = geoid.get_undulation(lat, lon)
+            if n is not None:
+                geoid_sep = n
+    except ImportError:
+        pass
+
     body = (f"GPGGA,{time_str},{lat_str},{lat_hemi},{lon_str},{lon_hemi},"
-            f"{fix_quality},{num_sats:02d},{hdop:.1f},{alt:.3f},M,47.3,M,,")
+            f"{fix_quality},{num_sats:02d},{hdop:.1f},{alt:.3f},M,{geoid_sep:.1f},M,,")
     cs = _nmea_checksum(body)
     return f"${body}*{cs}\r\n".encode()
 

@@ -40,6 +40,7 @@ from mock_generator import MockSensor, MockNtripBase
 from rtcm_decoder import ObservationStore, RtcmDecoder
 from vrs_engine import VrsEngine, PositionResult
 from ui import NrtkUI
+from geoid import load_geoid, get_geoid
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -258,9 +259,11 @@ class NrtkApp:
         # Log console
         if self._mock_sensor:
             ts  = time.strftime("%H:%M:%S")
+            geoid_str = f"N={result.geoid_undulation:+.3f}m  " if result.geoid_undulation != 0.0 else ""
             msg = (f"[{result.fix_status:6s}] "
                    f"Lat={result.lat:+.8f}  Lon={result.lon:+.8f}  "
                    f"Alt={result.alt:+.3f}m  "
+                   f"{geoid_str}"
                    f"σH={result.sigma_h:.3f}m  "
                    f"Bases={result.n_bases_used}  Sats={result.n_sats_used}")
 
@@ -493,6 +496,18 @@ def main():
 
     # Chargement config
     cfg = load_config(args.config)
+
+    # Chargement du géoïde RAF20
+    geoid_path = Path(__file__).resolve().parent / "RAF20.gtx"
+    geoid = load_geoid(geoid_path)
+    if geoid.loaded:
+        # Test rapide avec la position rover configurée
+        mock_cfg = cfg.get("mock", {})
+        test_lat = mock_cfg.get("rover_lat", 48.83)
+        test_lon = mock_cfg.get("rover_lon", 2.37)
+        n = geoid.get_undulation(test_lat, test_lon)
+        if n is not None:
+            logger.info(f"Ondulation géoïdale à ({test_lat:.4f}, {test_lon:.4f}) : N = {n:+.3f} m")
 
     # Vérification dépendances
     _check_dependencies()
