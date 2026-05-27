@@ -7,6 +7,7 @@ sensor:
   baudrate: 115200
   timeout: 2.0
   mock: true # true = données simulées, false = capteur réel
+  antenna_height: 1.75  # Hauteur de l'antenne au-dessus du sol (m) — soustraite de l'altitude
 
 # --- Balises Centipede (NTRIP) ---
 # Choisir 5 balises proches de votre position de travail

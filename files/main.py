@@ -160,6 +160,14 @@ class NrtkApp:
         # NTrip mock hérite du paramètre sensor par défaut pour la rétrocompatibilité
         self._mock_ntrip = cfg.get("ntrip", {}).get("mock", self._mock_sensor) and not force_real
 
+        # Hauteur d'antenne au-dessus du sol (m) — soustraite de l'altitude
+        self._antenna_height = cfg["sensor"].get("antenna_height", 0.0)
+        if self._antenna_height > 0:
+            logger.info(f"Hauteur d'antenne configurée : {self._antenna_height:.2f} m")
+
+        # Référence au géoïde chargé
+        self._geoid = get_geoid()
+
         # Shared state
         self._store   = ObservationStore(max_age=5.0)
         self._decoder = RtcmDecoder(self._store)
@@ -248,6 +256,11 @@ class NrtkApp:
 
     def _on_position_result(self, result: PositionResult):
         """Reçoit chaque résultat du moteur VRS."""
+        # Déduire la hauteur d'antenne de l'altitude affichée
+        if self._antenna_height > 0:
+            result.alt -= self._antenna_height
+            result.vrs_alt -= self._antenna_height
+
         if self._mock_sensor and self._ui:
             self._ui.update_position(result)
 
@@ -260,10 +273,11 @@ class NrtkApp:
         if self._mock_sensor:
             ts  = time.strftime("%H:%M:%S")
             geoid_str = f"N={result.geoid_undulation:+.3f}m  " if result.geoid_undulation != 0.0 else ""
+            ant_str = f"Ant=-{self._antenna_height:.2f}m  " if self._antenna_height > 0 else ""
             msg = (f"[{result.fix_status:6s}] "
                    f"Lat={result.lat:+.8f}  Lon={result.lon:+.8f}  "
                    f"Alt={result.alt:+.3f}m  "
-                   f"{geoid_str}"
+                   f"{geoid_str}{ant_str}"
                    f"σH={result.sigma_h:.3f}m  "
                    f"Bases={result.n_bases_used}  Sats={result.n_sats_used}")
 
@@ -284,14 +298,31 @@ class NrtkApp:
         fix_map = {0: "NONE", 1: "SINGLE", 2: "FLOAT", 4: "FIX", 5: "FLOAT"}
         fix_status = fix_map.get(fix_quality, "NONE")
 
+        # --- Correction géoïdale ---
+        # Le NMEA GGA champ 9 fournit l'altitude orthométrique (H)
+        # On applique la correction RAF20 pour obtenir l'altitude terrain précise
+        geoid_n = 0.0
+        alt_corrected = alt
+        if self._geoid and self._geoid.loaded:
+            n = self._geoid.get_undulation(lat, lon)
+            if n is not None:
+                geoid_n = n
+                alt_corrected = alt
+
+        # Déduire la hauteur d'antenne
+        if self._antenna_height > 0:
+            alt_corrected -= self._antenna_height
+
         result = PositionResult(
             timestamp=time.time(),
-            lat=lat, lon=lon, alt=alt,
+            lat=lat, lon=lon, alt=alt_corrected,
+            alt_ellipsoidal=alt + geoid_n if geoid_n != 0 else alt,
             fix_status=fix_status,
             n_sats_used=num_sats,
             pdop=hdop,
             sigma_h=hdop * 1.5,
-            sigma_v=hdop * 2.0
+            sigma_v=hdop * 2.0,
+            geoid_undulation=geoid_n,
         )
 
         if self._vrs and self._vrs.last_result:
@@ -303,9 +334,12 @@ class NrtkApp:
         self._ui.update_position(result)
 
         ts = time.strftime("%H:%M:%S")
+        geoid_str = f"N={geoid_n:+.3f}m  " if geoid_n != 0.0 else ""
+        ant_str = f"Ant=-{self._antenna_height:.2f}m  " if self._antenna_height > 0 else ""
         msg = (f"[{result.fix_status:6s}] "
                f"Lat={result.lat:+.8f}  Lon={result.lon:+.8f}  "
                f"Alt={result.alt:+.3f}m  "
+               f"{geoid_str}{ant_str}"
                f"Sats={result.n_sats_used}")
         logger.info(msg)
         level_map = {"FIX": "fix", "FLOAT": "float", "SINGLE": "warn", "NONE": "error"}

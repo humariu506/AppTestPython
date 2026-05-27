@@ -184,6 +184,7 @@ class NrtkUI:
             ("Latitude  (°N)", "_lbl_lat"),
             ("Longitude (°E)", "_lbl_lon"),
             ("Altitude  (m)",  "_lbl_alt"),
+            ("Géoïde N  (m)",  "_lbl_geoid"),
             ("VRS Lat   (°N)", "_lbl_vrs_lat"),
             ("VRS Lon   (°E)", "_lbl_vrs_lon"),
             ("VRS Alt   (m)",  "_lbl_vrs_alt"),
@@ -315,6 +316,14 @@ class NrtkUI:
             self._lbl_lat.config(text=f"{result.lat:+.8f}", fg=color)
             self._lbl_lon.config(text=f"{result.lon:+.8f}", fg=color)
             self._lbl_alt.config(text=f"{result.alt:+.3f}", fg=color)
+
+            # Géoïde
+            if result.geoid_undulation != 0.0:
+                self._lbl_geoid.config(
+                    text=f"{result.geoid_undulation:+.3f}", fg=TEXT_DIM
+                )
+            else:
+                self._lbl_geoid.config(text="—", fg=TEXT_DIM)
 
             self._lbl_vrs_lat.config(text=f"{result.vrs_lat:+.8f}", fg=TEXT_DIM)
             self._lbl_vrs_lon.config(text=f"{result.vrs_lon:+.8f}", fg=TEXT_DIM)

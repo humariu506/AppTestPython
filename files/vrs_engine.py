@@ -582,7 +582,7 @@ class VrsEngine:
 
         result.geoid_undulation = geoid_n
         result.n_bases_used = n_bases
-        result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt_ellip
+        result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt
         result.vrs_rtcm = vrs_rtcm
 
         self._last_result = result
