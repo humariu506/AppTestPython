@@ -523,25 +523,27 @@ class VrsEngine:
 
     def _compute_epoch(self):
         with self._lock:
-            r_lat, r_lon, r_alt = self._rover_lat, self._rover_lon, self._rover_alt
+            r_lat, r_lon, r_alt_ellip = self._rover_lat, self._rover_lon, self._rover_alt
 
-        # --- Correction géoïdale ---
-        # r_alt provient du NMEA GGA = altitude orthométrique (H)
-        # Pour les calculs ECEF, on a besoin de l'altitude ellipsoïdale (h = H + N)
+        # --- Correction géoïdale fine (RAF20) ---
+        # r_alt_ellip est déjà l'altitude ellipsoïdale (h) brute de l'antenne
         geoid_n = 0.0
-        r_alt_ellip = r_alt
         if self._geoid and self._geoid.loaded:
             n = self._geoid.get_undulation(r_lat, r_lon)
             if n is not None:
                 geoid_n = n
-                r_alt_ellip = r_alt + geoid_n  # h = H + N
+        
+        # Pour les logs, l'altitude approximative orthométrique H = h - N
+        r_alt_ortho = r_alt_ellip - geoid_n
+        logger.debug(f"GGA h (ellipsoïdale) = {r_alt_ellip:.3f} m")
+        logger.debug(f"Géoïde N       = {geoid_n:+.3f} m -> H_orthométrique = {r_alt_ortho:.3f} m")
 
         epochs  = self._store.get_all_epochs()
         n_bases = len(epochs)
 
         if n_bases == 0:
             self._publish(PositionResult(
-                timestamp=time.time(), lat=r_lat, lon=r_lon, alt=r_alt,
+                timestamp=time.time(), lat=r_lat, lon=r_lon, alt=r_alt_ortho,
                 alt_ellipsoidal=r_alt_ellip,
                 fix_status="NONE",
                 geoid_undulation=geoid_n,
@@ -553,10 +555,11 @@ class VrsEngine:
         corrections = self._interpolator.interpolate(
             r_lat, r_lon, r_alt_ellip, epochs
         )
+        logger.debug(f"Interpolation VRS lancée avec h={r_alt_ellip:.3f} m (ellipsoïdal), bases={n_bases}")
 
         if corrections is None:
             self._publish(PositionResult(
-                timestamp=time.time(), lat=r_lat, lon=r_lon, alt=r_alt,
+                timestamp=time.time(), lat=r_lat, lon=r_lon, alt=r_alt_ortho,
                 alt_ellipsoidal=r_alt_ellip,
                 fix_status="SINGLE", n_bases_used=n_bases,
                 sigma_h=3.0, sigma_v=5.0,
@@ -568,21 +571,27 @@ class VrsEngine:
         # RTCM VRS avec altitude ellipsoïdale
         vrs_rtcm = build_vrs_rtcm_1005(r_lat, r_lon, r_alt_ellip) + \
                    build_vrs_rtcm_1004(corrections)
+        logger.debug(f"RTCM VRS construit ({len(vrs_rtcm)} bytes) — antérieur au solveur (h={r_alt_ellip:.3f} m)")
 
         result = self._solver.solve(r_lat, r_lon, r_alt_ellip, vrs_rtcm,
                                     corrections, n_bases)
+        logger.debug(f"Résultat solveur (ellipsoïdal) : lat={result.lat:+.8f} lon={result.lon:+.8f} h={result.alt:+.3f} m fix={result.fix_status}")
 
         # Reconversion du résultat : altitude ellipsoïdale → orthométrique
         result.alt_ellipsoidal = result.alt
         if self._geoid and self._geoid.loaded:
             n_result = self._geoid.get_undulation(result.lat, result.lon)
             if n_result is not None:
+                logger.debug(f"Ondulation au résultat N_result = {n_result:+.3f} m")
                 result.alt = result.alt_ellipsoidal - n_result  # H = h - N
+                logger.debug(f"Conversion H = h - N : {result.alt_ellipsoidal:+.3f} - {n_result:+.3f} = {result.alt:+.3f} m")
                 geoid_n = n_result
 
         result.geoid_undulation = geoid_n
         result.n_bases_used = n_bases
-        result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt
+        # Position VRS synthétique (altitude ellipsoïdale utilisée en interne)
+        result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt_ellip
+        logger.debug(f"VRS synthétique : lat={r_lat:+.8f} lon={r_lon:+.8f} h_vrs(ellip)={r_alt_ellip:+.3f} m")
         result.vrs_rtcm = vrs_rtcm
 
         self._last_result = result

@@ -105,7 +105,7 @@ def load_config(path: str) -> dict:
 # Le capteur réel est désormais géré par serial_manager.py
 
 def _parse_and_update_gga(gga_line: bytes, callback):
-    """Parse rapidement une trame GGA et extrait lat/lon/alt."""
+    """Parse rapidement une trame GGA et extrait lat/lon/alt ellipsoïdale."""
     try:
         line = gga_line.decode(errors="replace").strip()
         parts = line.split(",")
@@ -124,9 +124,10 @@ def _parse_and_update_gga(gga_line: bytes, callback):
         lat = _nmea_to_dd(parts[2], parts[3])
         lon = _nmea_to_dd(parts[4], parts[5])
         alt = float(parts[9]) if parts[9] else 0.0
+        geoid_sep = float(parts[11]) if len(parts) > 11 and parts[11] else 0.0
 
         if lat != 0.0 or lon != 0.0:
-            callback(lat, lon, alt)
+            callback(lat, lon, alt + geoid_sep)
     except Exception:
         pass
 
@@ -256,10 +257,15 @@ class NrtkApp:
 
     def _on_position_result(self, result: PositionResult):
         """Reçoit chaque résultat du moteur VRS."""
+        # Log des valeurs avant correction d'antenne
+        logger.debug(f"Position reçue — h_ellip={result.alt_ellipsoidal:+.3f} m, H={result.alt:+.3f} m, vrs_h_ellip={result.vrs_alt:+.3f} m, geoid={result.geoid_undulation:+.3f} m")
+
         # Déduire la hauteur d'antenne de l'altitude affichée
         if self._antenna_height > 0:
             result.alt -= self._antenna_height
+            result.alt_ellipsoidal -= self._antenna_height
             result.vrs_alt -= self._antenna_height
+            logger.debug(f"Après soustraction hauteur antenne ({self._antenna_height:.2f} m) — H={result.alt:+.3f} m, h_ellip={result.alt_ellipsoidal:+.3f} m, vrs_H={result.vrs_alt:+.3f} m")
 
         if self._mock_sensor and self._ui:
             self._ui.update_position(result)
@@ -290,7 +296,7 @@ class NrtkApp:
                 }
                 self._ui.log(msg, level_map.get(result.fix_status, "info"))
 
-    def _on_real_sensor_ui_update(self, lat: float, lon: float, alt: float, fix_quality: int, num_sats: int, hdop: float):
+    def _on_real_sensor_ui_update(self, lat: float, lon: float, alt: float, geoid_sep: float, fix_quality: int, num_sats: int, hdop: float):
         """Mise à jour de l'UI à partir du NMEA réel du UM980."""
         if not self._ui or self._mock_sensor:
             return
@@ -298,25 +304,25 @@ class NrtkApp:
         fix_map = {0: "NONE", 1: "SINGLE", 2: "FLOAT", 4: "FIX", 5: "FLOAT"}
         fix_status = fix_map.get(fix_quality, "NONE")
 
-        # --- Correction géoïdale ---
-        # Le NMEA GGA champ 9 fournit l'altitude orthométrique (H)
-        # On applique la correction RAF20 pour obtenir l'altitude terrain précise
+        # Altitude ellipsoïdale brute de l'antenne
+        alt_ellip_antenna = alt + geoid_sep
+
+        # Altitude ellipsoïdale brute au sol
+        alt_ellip_ground = alt_ellip_antenna - self._antenna_height if self._antenna_height > 0 else alt_ellip_antenna
+
+        # --- Correction géoïdale fine (RAF20) ---
         geoid_n = 0.0
-        alt_corrected = alt
+        alt_corrected = alt - self._antenna_height if self._antenna_height > 0 else alt
         if self._geoid and self._geoid.loaded:
             n = self._geoid.get_undulation(lat, lon)
             if n is not None:
                 geoid_n = n
-                alt_corrected = alt
-
-        # Déduire la hauteur d'antenne
-        if self._antenna_height > 0:
-            alt_corrected -= self._antenna_height
+                alt_corrected = alt_ellip_ground - geoid_n
 
         result = PositionResult(
             timestamp=time.time(),
             lat=lat, lon=lon, alt=alt_corrected,
-            alt_ellipsoidal=alt + geoid_n if geoid_n != 0 else alt,
+            alt_ellipsoidal=alt_ellip_ground,
             fix_status=fix_status,
             n_sats_used=num_sats,
             pdop=hdop,
