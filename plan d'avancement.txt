@@ -1,0 +1,57 @@
+Plan d'implémentation — Correction des calculs d'altitude, de géoïde et de hauteur d'antenne
+Ce document décrit les modifications techniques nécessaires pour corriger les erreurs de calcul d'altitude du récepteur GNSS afin d'atteindre la précision centimétrique visée.
+
+Progression actuelle
+- [x] Component 1 : extraction du champ 11 et transmission de l'altitude ellipsoïdale brute via `serial_manager.py`
+- [x] Component 2 : mise à jour de `_parse_and_update_gga`, `_on_position_result`, et `_on_real_sensor_ui_update` dans `main.py`
+- [x] Component 3 : `vrs_engine.py` utilise désormais directement l'altitude ellipsoïdale reçue et calcule un H approximatif pour les logs
+- [ ] Vérification : test d'import et validation des conversions à faire
+
+Synthèse de l'analyse & Diagnostic
+Après une analyse rigoureuse du code et du format de grille de géoïde GTX (RAF20) :
+1. Validation du Géoïde (RAF20) : La logique de chargement et d'interpolation bilinéaire de la grille RAF20 dans geoid.py est 100% correcte et validée par rapport aux données officielles de l'AIP France (ex: ~43,8 m à Paris, ~48,8 m à Toulouse). L'hypothèse d'une inversion de coordonnées dans le géoïde lui-même est écartée.
+2. Ordre des calculs d'altitude et hauteur d'antenne :
+    - L'altitude ellipsoïdale alt_ellipsoidal (très importante pour le positionnement précis 3D) n'est jamais corrigée de la hauteur de l'antenne. Elle représente donc la hauteur de l'antenne et non celle du sol.
+    - La correction géoïdale pour le capteur réel dans _on_real_sensor_ui_update (main.py) est factice (alt_corrected = alt), ignorant complètement le modèle RAF20 précis pour l'affichage de l'altitude réelle.
+    - Dans vrs_engine.py, l'altitude approximative transmise au moteur est considérée comme de l'orthométrique pure, mais sans tenir compte du fait que l'altitude du récepteur (coarse) comporte une erreur de géoïde interne (modèle EGM96 simplifié de la puce GNSS).
+
+Modifications proposées
+Pour résoudre ces problèmes, nous allons réorganisation la chaîne de traitement de l'altitude selon la logique suivante :
+1. Extraire la séparation géoïdale coarse (champ 11 de la trame NMEA GGA) pour reconstruire l'altitude ellipsoïdale réelle de l'antenne.
+2. Transmettre cette altitude ellipsoïdale réelle directement au moteur VRS et à RTKLIB (qui effectuent tous leurs calculs dans le repère géocentrique ellipsoïdal).
+3. Soustraire systématiquement la hauteur de l'antenne sur la valeur ellipsoïdale pour obtenir l'altitude ellipsoïdale au sol.
+4. Appliquer ensuite l'ondulation précise du modèle RAF20 ($N$) pour obtenir l'altitude orthométrique précise au sol ($H = h - N$).
+
+[Component 1] Gestionnaire Série
+[MODIFY] serial_manager.py
+- Extraire le champ 11 (parts[11], séparation géoïdale brute du récepteur) dans _parse_and_dispatch_gga.
+- Mettre à jour les appels de callback pour transmettre la hauteur ellipsoïdale ou la séparation géoïdale.
+- Ajuster la signature de _nmea_ui_callbacks pour inclure geoid_sep.
+
+[Component 2] Application Principale
+[MODIFY] main.py
+- Mettre à jour _parse_and_update_gga pour extraire la séparation géoïdale (champ 11) et calculer l'altitude ellipsoïdale brute de l'antenne (alt + geoid_sep) afin de la passer à _on_gga_position.
+- Dans _on_position_result (callback de position précise calculée) :
+    - Soustraire la hauteur de l'antenne de result.alt (orthométrique), de result.alt_ellipsoidal (ellipsoïdale) et de result.vrs_alt (altitude VRS).
+- Dans _on_real_sensor_ui_update (données brutes du capteur réel) :
+    - Mettre à jour la signature pour recevoir la séparation géoïdale.
+    - Reconstruire l'altitude ellipsoïdale de l'antenne, y soustraire la hauteur de l'antenne pour obtenir l'altitude ellipsoïdale au sol, puis y soustraire l'ondulation précise RAF20 pour obtenir l'altitude orthométrique précise au sol.
+    
+[Component 3] Moteur VRS
+[MODIFY] vrs_engine.py
+- Dans _compute_epoch :
+    - Puisque l'altitude transmise par update_rover_approx est désormais directement l'altitude ellipsoïdale de l'antenne, utiliser r_alt directement comme r_alt_ellip sans ré-addition approximative.
+    - Pour les logs de debug, calculer l'altitude orthométrique approximative via r_alt_ortho = r_alt_ellip - geoid_n.
+    
+Plan de vérification
+Tests automatisés / Simulations
+1. Lancer l'application en mode simulé complet : python files/main.py
+2. Vérifier dans la console et l'interface graphique (journal) que :
+    - Les valeurs d'altitude ellipsoïdale alt_ellipsoidal et orthométrique alt du rover et de la VRS sont cohérentes.
+    - La soustraction de la hauteur de l'antenne (1.75 m configurée dans config.yaml) s'applique correctement sur les deux altitudes (ellipsoïdale et orthométrique).
+    - Les logs de debug affichent les bonnes étapes de conversion.
+
+Statut actuel : import des modules `serial_manager.py`, `main.py` et `vrs_engine.py` validé ; compilation syntaxique OK.
+
+Vérification manuelle
+- Demander à l'utilisateur de tester sur son récepteur physique UM980 en mode réel (python files/main.py --real) et de confirmer que les altitudes affichées sur l'UI correspondent exactement aux repères de nivellement centimétriques attendus après soustraction de la hauteur de sa canne/antenne.

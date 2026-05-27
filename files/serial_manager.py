@@ -36,7 +36,7 @@ class SerialManager:
         self._write_queue = queue.Queue()
         self._nmea_callbacks: list[Callable[[bytes], None]] = []
         self._gga_callbacks: list[Callable[[float, float, float], None]] = []
-        self._nmea_ui_callbacks: list[Callable[[float, float, float, int, int, float], None]] = []
+        self._nmea_ui_callbacks: list[Callable[[float, float, float, float, int, int, float], None]] = []
 
         self.connected_event = threading.Event()
 
@@ -46,7 +46,7 @@ class SerialManager:
     def add_gga_callback(self, cb: Callable[[float, float, float], None]):
         self._gga_callbacks.append(cb)
 
-    def add_nmea_ui_callback(self, cb: Callable[[float, float, float, int, int, float], None]):
+    def add_nmea_ui_callback(self, cb: Callable[[float, float, float, float, int, int, float], None]):
         self._nmea_ui_callbacks.append(cb)
 
     def start(self) -> bool:
@@ -171,17 +171,18 @@ class SerialManager:
             num_sats = int(parts[7]) if len(parts) > 7 and parts[7] else 0
             hdop = float(parts[8]) if len(parts) > 8 and parts[8] else 99.9
             alt = float(parts[9]) if len(parts) > 9 and parts[9] else 0.0
+            geoid_sep = float(parts[11]) if len(parts) > 11 and parts[11] else 0.0
 
             if lat != 0.0 or lon != 0.0:
                 for cb in self._gga_callbacks:
                     try:
-                        cb(lat, lon, alt)
+                        cb(lat, lon, alt + geoid_sep)
                     except Exception as e:
                         logger.error(f"Erreur callback GGA: {e}")
                 
                 for cb in self._nmea_ui_callbacks:
                     try:
-                        cb(lat, lon, alt, fix_quality, num_sats, hdop)
+                        cb(lat, lon, alt, geoid_sep, fix_quality, num_sats, hdop)
                     except Exception as e:
                         logger.error(f"Erreur callback NMEA UI: {e}")
         except Exception:
