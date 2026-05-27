@@ -256,10 +256,14 @@ class NrtkApp:
 
     def _on_position_result(self, result: PositionResult):
         """Reçoit chaque résultat du moteur VRS."""
+        # Log des valeurs avant correction d'antenne
+        logger.debug(f"Position reçue — h_ellip={result.alt_ellipsoidal:+.3f} m, H={result.alt:+.3f} m, vrs_h_ellip={result.vrs_alt:+.3f} m, geoid={result.geoid_undulation:+.3f} m")
+
         # Déduire la hauteur d'antenne de l'altitude affichée
         if self._antenna_height > 0:
             result.alt -= self._antenna_height
             result.vrs_alt -= self._antenna_height
+            logger.debug(f"Après soustraction hauteur antenne ({self._antenna_height:.2f} m) — H={result.alt:+.3f} m, vrs_H={result.vrs_alt:+.3f} m")
 
         if self._mock_sensor and self._ui:
             self._ui.update_position(result)

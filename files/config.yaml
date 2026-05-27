@@ -3,7 +3,7 @@
 
 # --- Capteur GNSS ---
 sensor:
-  port: "COM4"          # Linux — changer en "COMX" sous Windows
+  port: "COM5"          # Linux — changer en "COMX" sous Windows
   baudrate: 115200
   timeout: 2.0
   mock: true # true = données simulées, false = capteur réel
@@ -14,13 +14,13 @@ sensor:
 # Liste complète : https://centipede.fr/
 
 bases:
-  - id: "81"
-    host: "crtk.net"
-    port: 2101
-    mountpoint: "OUIL"          # Remplacer par les mountpoints réels
-    lat: 48.9229               # Latitude approx. de la balise
-    lon: 2.1776
-    alt: 86.5613
+#  - id: "81"
+#    host: "crtk.net"
+#    port: 2101
+#    mountpoint: "OUIL"          # Remplacer par les mountpoints réels
+#    lat: 48.9229               # Latitude approx. de la balise
+#    lon: 2.1776
+#    alt: 86.5613
   - id: "1220"
     host: "crtk.net"
     port: 2101

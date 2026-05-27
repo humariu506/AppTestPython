@@ -281,7 +281,7 @@ class NrtkUI:
                   bg=BG_CARD2, fg=TEXT_MAIN, relief="flat",
                   activebackground=ACCENT, cursor="hand2").pack(side="right")
 
-        self.root.geometry("760x600")
+        self.root.geometry("760x760")
 
     # ------------------------------------------------------------------
     # Boucle de rafraîchissement
