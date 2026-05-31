@@ -80,7 +80,7 @@ rtklib:
 
 # --- VRS ---
 vrs:
-  enabled: false  # true = activer le moteur VRS, false = Pont direct RTCM de la 1ère base vers le UM980
+  enabled: true  # true = activer le moteur VRS, false = Pont direct RTCM de la 1ère base vers le UM980
 
 # --- Mock ---
 mock:

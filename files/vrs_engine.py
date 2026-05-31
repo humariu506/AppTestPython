@@ -492,7 +492,13 @@ class VrsEngine:
         self._lock = threading.Lock()
 
     def update_rover_approx(self, lat: float, lon: float, alt: float):
-        """Mise à jour thread-safe de la position approx. rover (depuis NMEA)."""
+        """Mise à jour thread-safe de la position approx. rover.
+
+        `alt` doit être l'altitude **ellipsoïdale** h = H + N (champ 9 + champ 11
+        du GGA). C'est ce que livrent serial_manager et _parse_and_update_gga.
+        Le moteur VRS travaille en ellipsoïdal en interne et redescend à
+        l'orthométrique via RAF20 uniquement à la publication du résultat.
+        """
         with self._lock:
             self._rover_lat = lat
             self._rover_lon = lon
@@ -547,7 +553,7 @@ class VrsEngine:
                 alt_ellipsoidal=r_alt_ellip,
                 fix_status="NONE",
                 geoid_undulation=geoid_n,
-                vrs_lat=r_lat, vrs_lon=r_lon, vrs_alt=r_alt_ellip
+                vrs_lat=r_lat, vrs_lon=r_lon, vrs_alt=r_alt_ortho
             ))
             return
 
@@ -564,7 +570,7 @@ class VrsEngine:
                 fix_status="SINGLE", n_bases_used=n_bases,
                 sigma_h=3.0, sigma_v=5.0,
                 geoid_undulation=geoid_n,
-                vrs_lat=r_lat, vrs_lon=r_lon, vrs_alt=r_alt_ellip
+                vrs_lat=r_lat, vrs_lon=r_lon, vrs_alt=r_alt_ortho
             ))
             return
 
@@ -589,9 +595,11 @@ class VrsEngine:
 
         result.geoid_undulation = geoid_n
         result.n_bases_used = n_bases
-        # Position VRS synthétique (altitude ellipsoïdale utilisée en interne)
-        result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt_ellip
-        logger.debug(f"VRS synthétique : lat={r_lat:+.8f} lon={r_lon:+.8f} h_vrs(ellip)={r_alt_ellip:+.3f} m")
+        # Position VRS synthétique exposée à l'UI : altitude orthométrique
+        # (l'altitude ellipsoïdale n'est utilisée qu'en interne pour la
+        # synthèse RTCM 1005 et l'appel au solveur, plus haut).
+        result.vrs_lat, result.vrs_lon, result.vrs_alt = r_lat, r_lon, r_alt_ortho
+        logger.debug(f"VRS synthétique : lat={r_lat:+.8f} lon={r_lon:+.8f} H_vrs(ortho)={r_alt_ortho:+.3f} m")
         result.vrs_rtcm = vrs_rtcm
 
         self._last_result = result

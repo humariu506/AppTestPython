@@ -17,8 +17,8 @@ mode *mock* pour développer sans matériel.
 - [Configuration](#configuration)
 - [Utilisation](#utilisation)
 - [Modes de fonctionnement](#modes-de-fonctionnement)
+- [Altitude et géoïde](#altitude-et-géoïde)
 - [Logs](#logs)
-- [Feuille de route](#feuille-de-route)
 
 ## Aperçu fonctionnel
 
@@ -206,23 +206,41 @@ cohérentes (5 bases simulées, satellites visibles communs, erreurs
 différentielles troposphère/ionosphère injectées), ce qui permet de
 valider l'ensemble du pipeline VRS sans matériel ni connexion réseau.
 
+## Altitude et géoïde
+
+Le pipeline distingue strictement deux références verticales et les
+manipule dans cet ordre :
+
+| Symbole | Sens                                            | Fournisseur                      |
+|---------|-------------------------------------------------|----------------------------------|
+| `H`     | altitude orthométrique (« terrain »)            | NMEA GGA, champ 9                |
+| `N`     | ondulation du géoïde                            | NMEA GGA champ 11 (en entrée) ; RAF20 (en sortie) |
+| `h`     | altitude ellipsoïdale = `H + N`                 | déduite                          |
+
+**Convention interne** : `VrsEngine.update_rover_approx()` reçoit toujours
+une altitude **ellipsoïdale `h`**. Les deux entrées GGA s'alignent dessus :
+
+- En mode capteur réel, `serial_manager._parse_and_dispatch_gga` somme
+  champ 9 + champ 11 avant d'appeler le callback.
+- En mode mock, `_parse_and_update_gga` ([main.py:107](files/main.py#L107))
+  fait le même calcul.
+
+Le moteur VRS travaille en ellipsoïdal en interne (les calculs ECEF /
+interpolation IDW / synthèse RTCM 1004-1005 le requièrent) et **redescend
+en orthométrique uniquement à la publication du résultat**, via RAF20 :
+`H_publiée = h_solveur − N_RAF20(lat, lon)`. Cela garantit que la sortie
+est exprimée dans le quasi-géoïde français IGN69 indépendamment du modèle
+de géoïde utilisé en interne par le récepteur.
+
+> Limite connue : en mode *pont RTCM direct* (`vrs.enabled: false`),
+> l'altitude affichée provient du champ 9 brut du GGA, donc référencée au
+> modèle de géoïde du récepteur (typiquement EGM96/EGM2008 pour l'UM980),
+> **et non à RAF20**. Un écart de quelques décimètres avec un matériel de
+> référence calé sur IGN69 est alors attendu.
+
 ## Logs
 
 Chaque exécution crée un fichier `files/logs/nrtk_log_AAAAMMJJ_HHMMSS.log`
 contenant l'intégralité des messages applicatifs (connexions NTRIP, statut
 fix, ondulations géoïdales, erreurs…), en plus de la sortie console. Le
 chemin du log est rappelé à l'arrêt.
-
-## Feuille de route
-
-Voir [Feuille de route.txt](Feuille%20de%20route.txt) pour les étapes
-ciblées du stage :
-
-1. Prise en main du récepteur UM980 (lecture NMEA stable).
-2. Sécurisation de l'accès au port série (gestionnaire unique).
-3. Architecture multithread (lecture / NTRIP / écriture RTCM).
-4. Pont RTCM direct (validation FLOAT/FIX hors VRS).
-5. Calcul VRS (interpolation + base virtuelle synthétique).
-6. Robustesse et supervision (watchdog, alertes, logs).
-
-Les étapes 1 à 5 sont opérationnelles ; l'étape 6 reste à enrichir.
