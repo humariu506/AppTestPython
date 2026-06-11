@@ -585,7 +585,6 @@ def _check_dependencies():
         "yaml":   ("pyyaml",    "Obligatoire pour la config"),
         "numpy":  ("numpy",     "Obligatoire pour le calcul VRS"),
         "serial": ("pyserial",  "Requis uniquement en mode capteur réel"),
-        "pyrtcm": ("pyrtcm",    "Optionnel — décodage RTCM amélioré"),
     }
     for module, (pkg, note) in deps.items():
         try:
@@ -597,6 +596,18 @@ def _check_dependencies():
                 sys.exit(1)
             else:
                 logger.warning(f"[OPTIONNEL] {pkg} absent — {note}")
+
+    # /!\ ATTENTION /!\ pyrtcm ne doit PAS être installé pour l'instant : sa présence empêche
+    # l'obtention d'une position fixe RTK (problème en cours d'investigation).
+    # On avertit explicitement l'utilisateur si le module est détecté.
+    try:
+        __import__("pyrtcm")
+        logger.warning("[ATTENTION] pyrtcm est installé — il est déconseillé "
+                       "pour l'instant : il empêche d'obtenir une position fixe "
+                       "RTK. Désinstallez-le (pip uninstall pyrtcm) pour utiliser "
+                       "le décodeur RTCM interne.")
+    except ImportError:
+        pass
 
 
 if __name__ == "__main__":

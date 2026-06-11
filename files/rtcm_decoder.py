@@ -177,6 +177,12 @@ class RtcmDecoder:
     """
     Décode les trames RTCM3 et alimente l'ObservationStore.
     Utilise pyrtcm si disponible, sinon bascule sur le décodeur interne.
+
+    /!\ AVERTISSEMENT : n'installez pas pyrtcm pour l'instant. Lorsque le
+    module est présent, ce chemin de décodage est privilégié et l'application
+    n'arrive plus à obtenir une position fixe RTK (cause non encore
+    identifiée). Tant que le problème n'est pas résolu, laissez pyrtcm
+    désinstallé pour que le décodeur interne soit utilisé.
     """
 
     def __init__(self, store: ObservationStore):
@@ -188,6 +194,10 @@ class RtcmDecoder:
 
     @staticmethod
     def _check_pyrtcm() -> bool:
+        # /!\ ATTENTION /!\ NE PAS installer pyrtcm pour l'instant : sa présence empêche
+        # actuellement l'obtention d'une position fixe RTK (problème en cours
+        # d'investigation). Si le module est absent, on retombe sur le
+        # décodeur interne, qui assure le bon fonctionnement du logiciel.
         try:
             import pyrtcm  # noqa: F401
             return True
@@ -215,6 +225,9 @@ class RtcmDecoder:
             self._decode_internal(base_id, payload, msg_type)
 
     # ---- Décodage via pyrtcm ----
+    # /!\ ATTENTION /!\ Chemin désactivé en pratique tant que pyrtcm n'est pas installé.
+    # Ne réactivez pas pyrtcm sans avoir résolu le problème de position fixe
+    # RTK qu'il provoque (voir l'avertissement dans la docstring de la classe).
 
     def _decode_pyrtcm(self, base_id: str, frame: bytes, msg_type: int, payload: bytes):
         try:

@@ -4,7 +4,11 @@ version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.4.4",
-    "pyrtcm>=1.1.12",
+    # /!\ pyrtcm volontairement désactivé : sa présence empêche actuellement
+    # l'obtention d'une position fixe RTK (problème en cours d'investigation).
+    # Ne pas réactiver tant que le problème n'est pas résolu — le décodeur RTCM
+    # interne assure le bon fonctionnement du logiciel.
+    # "pyrtcm>=1.1.12",
     "pyserial>=3.5",
     "pyyaml>=6.0.3",
 ]

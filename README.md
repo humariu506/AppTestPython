@@ -116,7 +116,7 @@ AppTestPython/
 │   ├── RAF20.gtx           ← grille géoïde IGN (France métropolitaine)
 │   └── logs/               ← journaux horodatés générés à l'exécution
 ├── RTKLIB-master/          ← solveur RTK externe (optionnel, cm-level)
-├── pyproject.toml          ← dépendances (numpy, pyrtcm, pyserial, pyyaml)
+├── pyproject.toml          ← dépendances (numpy, pyserial, pyyaml ; pyrtcm déconseillé)
 └── Feuille de route.txt    ← étapes du stage
 ```
 
@@ -136,8 +136,14 @@ fonctionne aussi :
 ```bash
 python -m venv .venv
 .venv\Scripts\activate        # Windows
-pip install numpy pyrtcm pyserial pyyaml
+pip install numpy pyserial pyyaml
 ```
+
+> /!\ **N'installez pas `pyrtcm` pour l'instant.** Lorsque le module est
+> présent, le décodeur l'utilise en priorité et l'application n'arrive plus
+> à établir une position fixe RTK. Tant que le problème n'est pas identifié,
+> laissez `pyrtcm` désinstallé : le décodeur RTCM interne prend alors le relais
+> et le logiciel fonctionne correctement.
 
 **Dépendances**
 
@@ -146,7 +152,7 @@ pip install numpy pyrtcm pyserial pyyaml
 | `pyyaml`   | Lecture de `config.yaml`                      | Oui           |
 | `numpy`    | Calcul VRS (algèbre linéaire, WLS)            | Oui           |
 | `pyserial` | Accès au port série du récepteur réel         | Mode réel     |
-| `pyrtcm`   | Décodage RTCM plus complet (fallback interne) | Optionnel     |
+| `pyrtcm`   | /!\ À NE PAS installer pour l'instant (voir ci-dessus) | Déconseillé   |
 
 **RTKLIB** (optionnel) : pour la précision centimétrique avec résolution
 d'ambiguïté entière, compiler `rtkpost`/`rtkrcv` depuis `RTKLIB-master/`

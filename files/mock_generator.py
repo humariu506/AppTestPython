@@ -160,7 +160,9 @@ def make_rtcm1006(base_id: int, lat: float, lon: float, alt: float) -> bytes:
     ecef_x, ecef_y, ecef_z = _lla_to_ecef(lat, lon, alt)
 
     # Encodage bitfield (simplifié — version fonctionnelle)
-    # En production : utiliser pyrtcm pour encoder proprement
+    # En production : un encodeur RTCM dédié serait préférable.
+    # /!\ ATTENTION /!\ Ne pas utiliser pyrtcm pour l'instant : son installation empêche
+    # actuellement l'obtention d'une position fixe RTK (problème non résolu).
     payload = bytearray(24)
     msg_type = 1006
     # Les 12 premiers bits = type de message
