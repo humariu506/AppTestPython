@@ -17,6 +17,7 @@ mode *mock* pour développer sans matériel.
 - [Configuration](#configuration)
 - [Utilisation](#utilisation)
 - [Modes de fonctionnement](#modes-de-fonctionnement)
+- [Mode VRS hybride](#mode-vrs-hybride)
 - [Altitude et géoïde](#altitude-et-géoïde)
 - [Logs](#logs)
 
@@ -127,8 +128,14 @@ de l'environnement (un `uv.lock` est versionné) et cible **Python ≥ 3.14**.
 
 ```bash
 # Cloner et entrer dans le dossier
-uv sync                       # crée .venv/ et installe les dépendances
+uv sync                       # crée .venv/ et installe les dépendances de base
+uv sync --extra api           # ajoute fastapi + uvicorn pour le serveur REST/WS
 ```
+
+La deuxième commande n'est nécessaire que si vous comptez activer le
+serveur API mobile (`api.enabled: true` dans `config.yaml`). Le dashboard
+HTTP stdlib (`http.enabled: true`) n'a besoin d'aucune dépendance
+supplémentaire.
 
 Sans `uv`, un classique `pip install -r` à partir de `pyproject.toml`
 fonctionne aussi :
@@ -137,6 +144,7 @@ fonctionne aussi :
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 pip install numpy pyserial pyyaml
+pip install fastapi uvicorn   # uniquement si on active le serveur API
 ```
 
 > /!\ **N'installez pas `pyrtcm` pour l'instant.** Lorsque le module est
@@ -152,6 +160,8 @@ pip install numpy pyserial pyyaml
 | `pyyaml`   | Lecture de `config.yaml`                      | Oui           |
 | `numpy`    | Calcul VRS (algèbre linéaire, WLS)            | Oui           |
 | `pyserial` | Accès au port série du récepteur réel         | Mode réel     |
+| `fastapi`  | Serveur REST + WebSocket pour intégration Android | Extra `api` |
+| `uvicorn`  | Serveur ASGI utilisé par FastAPI              | Extra `api`   |
 | `pyrtcm`   | /!\ À NE PAS installer pour l'instant (voir ci-dessus) | Déconseillé   |
 
 **RTKLIB** (optionnel) : pour la précision centimétrique avec résolution
@@ -173,9 +183,8 @@ Tout se règle dans [files/config.yaml](files/config.yaml). Sections clés :
   capteur réel.
 - **`rtklib`** : chemins vers `rtkrcv`/`rtkpost`, paramètres de résolution
   (élévation, navsys, AR ratio…).
-- **`vrs.enabled`** : `true` pour activer le calcul VRS, `false` pour
-  basculer en **pont RTCM direct** (corrections de la première base
-  envoyées brutes au récepteur — utile pour valider la chaîne I/O).
+- **`vrs.enabled`** : sélectionne le mode hybride ou le pont direct (voir
+  la section [Mode VRS hybride](#mode-vrs-hybride) ci-dessous).
 - **`mock`** : paramètres de simulation (position rover, bruit, cadence
   NMEA/RTCM, probabilité de coupure).
 - **`ui`** : cadence de rafraîchissement, nombre de décimales affichées.
@@ -211,6 +220,36 @@ En mock complet, l'application génère elle-même des trames NMEA et RTCM3
 cohérentes (5 bases simulées, satellites visibles communs, erreurs
 différentielles troposphère/ionosphère injectées), ce qui permet de
 valider l'ensemble du pipeline VRS sans matériel ni connexion réseau.
+
+## Mode VRS hybride
+
+Pour obtenir un **FIX RTK** côté récepteur tout en gardant le moteur VRS
+actif pour la télémétrie, l'application utilise un schéma hybride :
+
+- Le flux RTCM3 brut de la **première balise** (éphémérides, observations,
+  position 1005) est **toujours forwardé** au UM980, qu'on soit en
+  `vrs.enabled: true` ou `false`. C'est ce flux qui permet l'obtention
+  du FIX (RTK mono-base classique, baseline = distance réelle au caster).
+- Le moteur VRS continue de tourner en parallèle quand `vrs.enabled: true` :
+  il interpole les corrections multi-balises, synthétise un `PositionResult`
+  exposé dans l'UI tkinter, sur le dashboard HTTP et via l'API REST/WS.
+- Les trames 1004/1005 synthétisées **ne sont plus poussées** vers le port
+  série tant que leur encodage n'est pas conforme à RTCM 10403.3 — sans
+  quoi le UM980 rejette les trames et perd le FIX.
+
+Conséquence pratique :
+
+| Mode                       | FIX obtenu ?    | Multi-balises ?             |
+|----------------------------|-----------------|-----------------------------|
+| `vrs.enabled: true`        | ✅ (via base[0]) | ❌ (en attendant vraie VRS) |
+| `vrs.enabled: false`       | ✅ (via base[0]) | ❌                          |
+
+Autrement dit, `vrs.enabled` ne change pas (encore) la précision RTK ; il
+contrôle uniquement la richesse de la télémétrie. L'effet « vraie VRS »
+nécessiterait de réparer `build_vrs_rtcm_1004` (74 bits/satellite au lieu
+des 125 du standard) et d'ajouter le forwarding des éphémérides — voir
+[`.claude/skills/nrtk-vrs-hybrid.md`](.claude/skills/nrtk-vrs-hybrid.md)
+pour la feuille de route.
 
 ## Altitude et géoïde
 

@@ -203,6 +203,10 @@ class NrtkApp:
         # Objets mock (pour accès au statut)
         self._mock_bases: list[MockNtripBase] = []
 
+        # Serveurs HTTP optionnels (dashboard stdlib + API FastAPI)
+        self._http_server = None
+        self._api_server = None
+
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
@@ -211,10 +215,16 @@ class NrtkApp:
         """Appelé à chaque trame RTCM reçue d'une base."""
         self._decoder.decode(base_id, frame)
 
-        # Pont direct RTCM
-        vrs_enabled = self._cfg.get("vrs", {}).get("enabled", True)
-        if not self._mock_sensor and self._serial_manager and not vrs_enabled:
-            if self._cfg["bases"] and base_id == self._cfg["bases"][0]["id"]:
+        # --- Forward RTCM brut vers le UM980 (patch hybride) ---
+        # On forwarde TOUJOURS le flux brut de la première balise vers le récepteur,
+        # que `vrs.enabled` soit true (mode hybride) ou false (pont direct).
+        # Justification : la synthèse RTCM 1004/1005 actuelle n'est pas conforme
+        # au standard 10403.3 — le UM980 la rejette et reste en SINGLE. Le moteur
+        # VRS continue de tourner pour la télémétrie (UI, API, dashboard), mais
+        # le FIX RTK est assuré par le flux brut de base[0]. Voir le skill
+        # `nrtk-vrs-hybrid` pour le détail et les pistes de vraie VRS.
+        if not self._mock_sensor and self._serial_manager and self._cfg["bases"]:
+            if base_id == self._cfg["bases"][0]["id"]:
                 self._serial_manager.write_data(frame)
 
         # Mise à jour statut UI
@@ -270,10 +280,17 @@ class NrtkApp:
         if self._mock_sensor and self._ui:
             self._ui.update_position(result)
 
-        # Envoi des corrections RTCM vers le port série si capteur réel
-        vrs_enabled = self._cfg.get("vrs", {}).get("enabled", True)
-        if not self._mock_sensor and self._serial_manager and result.vrs_rtcm and vrs_enabled:
-            self._serial_manager.write_data(result.vrs_rtcm)
+        # Push WebSocket aux éventuels clients API connectés
+        if self._api_server is not None:
+            self._api_server.publish_result(result)
+
+        # --- NE PAS pousser result.vrs_rtcm vers la série (patch hybride) ---
+        # L'encodage 1004 (74 bits/sat au lieu de 125) et 1005 historique
+        # ne passe pas le décodeur du UM980. Les corrections envoyées au
+        # récepteur sont celles du flux brut de base[0] (forwarded dans
+        # _on_rtcm). result.vrs_rtcm reste calculé et accessible côté UI/API
+        # pour la télémétrie, mais n'atteint pas le port série. À réactiver
+        # lorsque build_vrs_rtcm_1004 sera conforme à RTCM 10403.3.
 
         # Log console
         if self._mock_sensor:
@@ -379,12 +396,104 @@ class NrtkApp:
         self._threads.append(t_vrs)
         logger.info("Moteur VRS démarré")
 
+        # Serveurs HTTP optionnels
+        self._start_http_servers()
+
         # Statut de démarrage
         if self._ui:
             self._ui.log(
                 f"Démarrage ({mode}) — {len(self._cfg['bases'])} bases NTRIP",
                 "info"
             )
+
+    # ------------------------------------------------------------------
+    # Statuts des bases (consommé par les serveurs HTTP)
+    # ------------------------------------------------------------------
+
+    def _collect_bases_status(self) -> list[dict]:
+        """Retourne une liste JSON-compatible des statuts des bases NTRIP.
+
+        Couvre les deux modes (mock et réel) en interrogeant tour à tour
+        les MockNtripBase puis les NtripClient. Utilisé par http_server et
+        api_server.
+        """
+        out: list[dict] = []
+        bases_by_id = {b["id"]: b for b in self._cfg.get("bases", [])}
+
+        # Mode mock
+        for mb in self._mock_bases:
+            cfg = bases_by_id.get(mb.base_name, {})
+            out.append({
+                "id": mb.base_name,
+                "mountpoint": cfg.get("mountpoint", ""),
+                "host": cfg.get("host", ""),
+                "connected": bool(mb.connected),
+                "msg_count": int(mb.msg_count),
+                "last_msg_age": mb.last_msg_age,
+                "last_error": None,
+            })
+
+        # Mode réel
+        for client in self._ntrip_clients:
+            cfg = bases_by_id.get(client.base_id, {})
+            out.append({
+                "id": client.base_id,
+                "mountpoint": cfg.get("mountpoint", ""),
+                "host": cfg.get("host", ""),
+                "connected": bool(client.connected),
+                "msg_count": int(client.msg_count),
+                "last_msg_age": client.last_msg_age,
+                "last_error": client.last_error,
+            })
+
+        return out
+
+    def _start_http_servers(self):
+        """Démarre le dashboard stdlib et/ou le serveur FastAPI selon la config."""
+        http_cfg = self._cfg.get("http", {}) or {}
+        if http_cfg.get("enabled", False):
+            try:
+                from http_server import NrtkHttpServer
+                self._http_server = NrtkHttpServer(
+                    vrs_engine=self._vrs,
+                    bases_status_provider=self._collect_bases_status,
+                    host=http_cfg.get("host", "0.0.0.0"),
+                    port=int(http_cfg.get("port", 8080)),
+                    refresh_ms=int(http_cfg.get("refresh_ms", 500)),
+                )
+                self._http_server.start()
+                if self._ui:
+                    self._ui.log(
+                        f"Dashboard HTTP : http://{http_cfg.get('host', '0.0.0.0')}:{http_cfg.get('port', 8080)}/",
+                        "info",
+                    )
+            except Exception as e:
+                logger.error(f"Impossible de démarrer le serveur HTTP : {e}")
+                self._http_server = None
+
+        api_cfg = self._cfg.get("api", {}) or {}
+        if api_cfg.get("enabled", False):
+            try:
+                from api_server import NrtkApiServer
+                self._api_server = NrtkApiServer(
+                    vrs_engine=self._vrs,
+                    bases_status_provider=self._collect_bases_status,
+                    host=api_cfg.get("host", "0.0.0.0"),
+                    port=int(api_cfg.get("port", 8081)),
+                    enable_cors=bool(api_cfg.get("cors", True)),
+                )
+                self._api_server.start()
+                if self._ui:
+                    self._ui.log(
+                        f"API REST/WS : http://{api_cfg.get('host', '0.0.0.0')}:{api_cfg.get('port', 8081)}/docs",
+                        "info",
+                    )
+            except ImportError as e:
+                logger.warning(f"API server non démarré : {e}")
+                self._api_server = None
+            except Exception as e:
+                logger.error(f"Impossible de démarrer le serveur API : {e}")
+                self._api_server = None
 
     def _start_mock_sensor(self):
         """Démarre le capteur mock."""
@@ -477,6 +586,16 @@ class NrtkApp:
 
     def stop(self):
         logger.info("Arrêt des composants…")
+        if self._http_server is not None:
+            try:
+                self._http_server.stop()
+            except Exception as e:
+                logger.warning(f"Erreur arrêt HTTP : {e}")
+        if self._api_server is not None:
+            try:
+                self._api_server.stop()
+            except Exception as e:
+                logger.warning(f"Erreur arrêt API : {e}")
         self._vrs.stop()
         for mb in self._mock_bases:
             mb.stop()

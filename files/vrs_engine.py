@@ -246,16 +246,65 @@ def _rtcm3_frame(msg_type: int, payload: bytes) -> bytes:
     return raw + bytes([(crc >> 16) & 0xFF, (crc >> 8) & 0xFF, crc & 0xFF])
 
 
-def build_vrs_rtcm_1005(lat: float, lon: float, alt: float, ref_id: int = 1) -> bytes:
-    """RTCM 1005 : annonce la position de la station VRS à RTKLIB."""
+def _to_signed_bits(value_m: float, n_bits: int) -> int:
+    """Convertit une coordonnée ECEF (mètres) en entier signé n_bits en complément
+    à deux, échelle 0.1 mm (= 10000 unités/m) — comme exigé par RTCM 10403.3 pour
+    les DF025/DF026/DF027.
+    """
+    v = int(round(value_m * 10000))
+    mask = (1 << n_bits) - 1
+    if v < 0:
+        v += (1 << n_bits)
+    return v & mask
+
+
+def build_vrs_rtcm_1005(lat: float, lon: float, alt: float, ref_id: int = 1,
+                        gps: bool = True, glonass: bool = True,
+                        galileo: bool = False) -> bytes:
+    """RTCM 1005 — Stationary Antenna Reference Point, No Height Information.
+
+    Conformité standard RTCM 10403.3 : payload de **152 bits** (= 19 octets),
+    avec encodage ECEF signé en complément à deux et flux atomique des champs
+    DF002..DF027.
+
+    Réf. layout, MSB → LSB (152 bits exactement) :
+        DF002 Message Number              12
+        DF003 Reference Station ID        12
+        DF021 ITRF Realization Year        6
+        DF022 GPS Indicator                1
+        DF023 GLONASS Indicator            1
+        DF024 Reserved for Galileo         1
+        DF141 Reference-Station Indicator  1
+        DF025 ARP ECEF-X                  38  (signed, 0.1 mm)
+        DF142 Single Receiver Oscillator   1
+              Reserved                     1
+        DF026 ARP ECEF-Y                  38
+        DF364 Quarter Cycle Indicator      2
+        DF027 ARP ECEF-Z                  38
+        ────────────────────────────────────
+        Total                             152
+    """
     ecef = _lla_to_ecef(lat, lon, alt)
-    x_r = int(round(ecef[0] * 10000)) & ((1 << 38) - 1)
-    y_r = int(round(ecef[1] * 10000)) & ((1 << 38) - 1)
-    z_r = int(round(ecef[2] * 10000)) & ((1 << 38) - 1)
-    # 148 bits : type(12)+id(12)+flags(6)+x(38)+pad(2)+y(38)+pad(2)+z(38)
-    b = (1005 << 136) | (ref_id << 124) | (0 << 118) | \
-        (x_r << 80) | (0 << 78) | (y_r << 40) | (0 << 38) | z_r
-    payload = b.to_bytes(19, "big")
+    x = _to_signed_bits(ecef[0], 38)
+    y = _to_signed_bits(ecef[1], 38)
+    z = _to_signed_bits(ecef[2], 38)
+
+    bits = 0
+    bits = (bits << 12) | (1005 & 0xFFF)        # DF002
+    bits = (bits << 12) | (ref_id & 0xFFF)      # DF003
+    bits = (bits << 6)  | 0                     # DF021 (0 = unknown)
+    bits = (bits << 1)  | (1 if gps else 0)     # DF022
+    bits = (bits << 1)  | (1 if glonass else 0) # DF023
+    bits = (bits << 1)  | (1 if galileo else 0) # DF024
+    bits = (bits << 1)  | 0                     # DF141 (0 = vraie station)
+    bits = (bits << 38) | x                     # DF025
+    bits = (bits << 1)  | 0                     # DF142
+    bits = (bits << 1)  | 0                     # reserved
+    bits = (bits << 38) | y                     # DF026
+    bits = (bits << 2)  | 0                     # DF364
+    bits = (bits << 38) | z                     # DF027
+
+    payload = bits.to_bytes(19, "big")          # 152 bits = 19 octets pile
     return _rtcm3_frame(1005, payload)
 
 

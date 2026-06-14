@@ -79,8 +79,18 @@ rtklib:
   fix_timeout: 60
 
 # --- VRS ---
+# Dans les deux modes ci-dessous, le flux RTCM brut de la première balise est
+# forwardé au UM980 et garantit le FIX RTK. La différence porte sur ce qui se
+# passe à côté pour la télémétrie/UI/API :
+#   enabled: true  → mode HYBRIDE — le moteur VRS calcule l'interpolation
+#                    multi-balises et publie les positions VRS dans l'UI/API.
+#                    Le RTCM synthétisé n'est PAS poussé vers le UM980 tant
+#                    que son encodage 1004 n'est pas conforme (voir le skill
+#                    `nrtk-vrs-hybrid` pour le détail).
+#   enabled: false → mode PONT DIRECT — le moteur VRS ne tourne pas, seule la
+#                    position du UM980 (GGA) est affichée.
 vrs:
-  enabled: true  # true = activer le moteur VRS, false = Pont direct RTCM de la 1ère base vers le UM980
+  enabled: true
 
 # --- Mock ---
 mock:
@@ -103,3 +113,23 @@ ui:
   coordinate_decimals: 8        # Décimales affichées lat/lon
   show_satellite_count: true
   show_rtcm_age: true
+
+# --- Serveur HTTP (Option A : dashboard stdlib, polling JS) ---
+# Mini-serveur sans dépendance externe. Sert un dashboard humain accessible
+# au navigateur, et expose /api/position, /api/bases, /api/status en JSON.
+http:
+  enabled: true                # true pour exposer le dashboard
+  host: "0.0.0.0"               # 127.0.0.1 pour limiter à la machine locale
+  port: 8080
+  refresh_ms: 500               # cadence du polling côté navigateur
+
+# --- API REST + WebSocket (Option C : intégration mobile via FastAPI) ---
+# Sert la même donnée que ci-dessus mais pour un client programmatique
+# (notamment l'application Android). Documentation OpenAPI auto-générée sur
+# /docs, WebSocket de push temps réel sur /ws/position.
+# Nécessite : `uv add fastapi uvicorn`.
+api:
+  enabled: true                # true pour exposer l'API mobile
+  host: "0.0.0.0"
+  port: 8081
+  cors: true                    # autorise toute origine (utile en dev mobile)
