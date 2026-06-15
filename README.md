@@ -18,6 +18,7 @@ mode *mock* pour développer sans matériel.
 - [Utilisation](#utilisation)
 - [Modes de fonctionnement](#modes-de-fonctionnement)
 - [Mode VRS hybride](#mode-vrs-hybride)
+- [Dashboard HTTP et API mobile](#dashboard-http-et-api-mobile)
 - [Altitude et géoïde](#altitude-et-géoïde)
 - [Logs](#logs)
 
@@ -114,6 +115,8 @@ AppTestPython/
 │   ├── mock_generator.py   ← capteur + bases NTRIP simulés
 │   ├── geoid.py            ← chargeur RAF20 (.gtx) et interpolation N
 │   ├── ui.py               ← interface tkinter
+│   ├── http_server.py      ← dashboard web stdlib + endpoints JSON (port 8080)
+│   ├── api_server.py       ← API REST + WebSocket FastAPI (port 8081, opt.)
 │   ├── RAF20.gtx           ← grille géoïde IGN (France métropolitaine)
 │   └── logs/               ← journaux horodatés générés à l'exécution
 ├── RTKLIB-master/          ← solveur RTK externe (optionnel, cm-level)
@@ -250,6 +253,87 @@ nécessiterait de réparer `build_vrs_rtcm_1004` (74 bits/satellite au lieu
 des 125 du standard) et d'ajouter le forwarding des éphémérides — voir
 [`.claude/skills/nrtk-vrs-hybrid.md`](.claude/skills/nrtk-vrs-hybrid.md)
 pour la feuille de route.
+
+## Dashboard HTTP et API mobile
+
+L'état du moteur VRS peut être exposé hors de l'UI tkinter via deux serveurs
+optionnels qui peuvent cohabiter sur des ports distincts. Tous deux lisent
+le même état en lecture seule (le `PositionResult` courant et la liste des
+statuts NTRIP), sans contention.
+
+| Critère          | Option A — dashboard stdlib       | Option C — API FastAPI            |
+|------------------|------------------------------------|------------------------------------|
+| Module           | `files/http_server.py`            | `files/api_server.py`             |
+| Dépendances      | **Aucune** (stdlib `http.server`) | `fastapi` + `uvicorn` (extra `api`) |
+| Port par défaut  | `8080`                            | `8081`                            |
+| Cible            | Humain (navigateur)               | Programmatique (app Android)      |
+| Pull/Push        | Polling JS (`setInterval`)        | REST + WebSocket push             |
+| Doc OpenAPI      | aucune                            | générée automatiquement sur `/docs` |
+| CORS             | `Access-Control-Allow-Origin: *`  | configurable (`api.cors`)         |
+
+Les deux sont **désactivés par défaut**. Pour les activer, dans
+[`files/config.yaml`](files/config.yaml) :
+
+```yaml
+http:
+  enabled: true       # ouvre le dashboard sur 8080
+  host: "0.0.0.0"
+  port: 8080
+  refresh_ms: 500     # cadence du polling navigateur
+
+api:
+  enabled: true       # ouvre l'API REST/WS sur 8081
+  host: "0.0.0.0"
+  port: 8081
+  cors: true
+```
+
+L'API nécessite un `uv sync --extra api` au préalable (voir [Installation](#installation)).
+Si l'extra n'a pas été synchronisé, `api.enabled: true` ne plante pas
+l'application : un warning est loggé et le serveur est simplement passé.
+
+### Endpoints
+
+**Dashboard (port 8080)**
+
+| Méthode | Chemin            | Réponse                                            |
+|---------|-------------------|----------------------------------------------------|
+| GET     | `/`               | Dashboard HTML embarqué auto-rafraîchi en JS       |
+| GET     | `/api/position`   | `{position: PositionResult, timestamp}`            |
+| GET     | `/api/bases`      | `{bases: [...], timestamp}`                        |
+| GET     | `/api/status`     | `{position, bases, timestamp}` (utilisé par la page) |
+
+**API FastAPI (port 8081)**
+
+| Méthode | Chemin            | Réponse                                            |
+|---------|-------------------|----------------------------------------------------|
+| GET     | `/api/health`     | `{ok, uptime}` — ping                              |
+| GET     | `/api/position`   | identique au port 8080                             |
+| GET     | `/api/bases`      | identique au port 8080                             |
+| GET     | `/api/status`     | identique au port 8080                             |
+| GET     | `/docs`           | Doc OpenAPI interactive (Swagger UI)               |
+| WS      | `/ws/position`    | Push JSON identique au payload `/api/status` à chaque résultat VRS publié |
+
+Le champ binaire `vrs_rtcm` du `PositionResult` est retiré avant
+sérialisation : il n'est ni utile côté client ni nativement JSON.
+
+### Cas d'usage
+
+- **Test terrain** : activer uniquement `http.enabled` pour avoir un
+  écran de supervision sur n'importe quel téléphone ou tablette connecté
+  au même réseau que le PC de labo.
+- **Intégration Android** : activer `api.enabled` et faire pointer le
+  client Kotlin sur `http://<ip-du-pc>:8081/ws/position`. La WebSocket
+  pousse un message JSON à chaque tour de boucle du moteur VRS (1 Hz).
+  Pour une intégration plus simple, le polling REST sur `/api/status`
+  fonctionne aussi très bien.
+- **Démo** : activer les deux. Le dashboard pour l'audience humaine, l'API
+  pour une éventuelle app de démonstration mobile.
+
+Voir [`.claude/skills/nrtk-http-api.md`](.claude/skills/nrtk-http-api.md)
+pour le détail de l'architecture (cohabitation, mécanisme de push WebSocket,
+pièges connus, points d'extension comme l'authentification ou les endpoints
+de configuration).
 
 ## Altitude et géoïde
 
