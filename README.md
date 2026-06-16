@@ -17,7 +17,7 @@ mode *mock* pour développer sans matériel.
 - [Configuration](#configuration)
 - [Utilisation](#utilisation)
 - [Modes de fonctionnement](#modes-de-fonctionnement)
-- [Mode VRS hybride](#mode-vrs-hybride)
+- [Modes VRS](#modes-vrs)
 - [Dashboard HTTP et API mobile](#dashboard-http-et-api-mobile)
 - [Altitude et géoïde](#altitude-et-géoïde)
 - [Logs](#logs)
@@ -186,8 +186,10 @@ Tout se règle dans [files/config.yaml](files/config.yaml). Sections clés :
   capteur réel.
 - **`rtklib`** : chemins vers `rtkrcv`/`rtkpost`, paramètres de résolution
   (élévation, navsys, AR ratio…).
-- **`vrs.enabled`** : sélectionne le mode hybride ou le pont direct (voir
-  la section [Mode VRS hybride](#mode-vrs-hybride) ci-dessous).
+- **`vrs.enabled`** / **`vrs.pure_mode`** : sélectionnent le mode pont
+  direct, hybride ou VRS pure (voir la section [Modes VRS](#modes-vrs)
+  ci-dessous). `vrs.station_id` est la valeur DF003 inscrite dans les
+  trames synthétisées.
 - **`mock`** : paramètres de simulation (position rover, bruit, cadence
   NMEA/RTCM, probabilité de coupure).
 - **`ui`** : cadence de rafraîchissement, nombre de décimales affichées.
@@ -224,35 +226,64 @@ cohérentes (5 bases simulées, satellites visibles communs, erreurs
 différentielles troposphère/ionosphère injectées), ce qui permet de
 valider l'ensemble du pipeline VRS sans matériel ni connexion réseau.
 
-## Mode VRS hybride
+## Modes VRS
 
-Pour obtenir un **FIX RTK** côté récepteur tout en gardant le moteur VRS
-actif pour la télémétrie, l'application utilise un schéma hybride :
+Trois modes de fonctionnement sont sélectionnables via la section
+`vrs` du `config.yaml`. Tous garantissent que le UM980 reçoit un flux
+RTCM3 conforme et peut atteindre un FIX RTK ; ils se distinguent par la
+*provenance* de ce flux.
 
-- Le flux RTCM3 brut de la **première balise** (éphémérides, observations,
-  position 1005) est **toujours forwardé** au UM980, qu'on soit en
-  `vrs.enabled: true` ou `false`. C'est ce flux qui permet l'obtention
-  du FIX (RTK mono-base classique, baseline = distance réelle au caster).
-- Le moteur VRS continue de tourner en parallèle quand `vrs.enabled: true` :
-  il interpole les corrections multi-balises, synthétise un `PositionResult`
-  exposé dans l'UI tkinter, sur le dashboard HTTP et via l'API REST/WS.
-- Les trames 1004/1005 synthétisées **ne sont plus poussées** vers le port
-  série tant que leur encodage n'est pas conforme à RTCM 10403.3 — sans
-  quoi le UM980 rejette les trames et perd le FIX.
+| `enabled` | `pure_mode` | Nom court        | Flux RTCM envoyé au UM980                                                | Moteur VRS                |
+|:---------:|:-----------:|------------------|--------------------------------------------------------------------------|---------------------------|
+| `false`   | *           | **Pont direct**  | flux brut intégral de `bases[0]`                                         | éteint                    |
+| `true`    | `false`     | **Hybride** *(défaut)* | flux brut intégral de `bases[0]`                                   | actif, télémétrie seule   |
+| `true`    | `true`      | **VRS pure**     | éphémérides du flux brut + 1005 et 1002 synthétisés à la position du rover | actif, RTCM poussé        |
 
-Conséquence pratique :
+**Pont direct** est le plus simple : aucune calcul, le UM980 fait du RTK
+mono-base classique avec `bases[0]` comme référence. Baseline = distance
+réelle au caster.
 
-| Mode                       | FIX obtenu ?    | Multi-balises ?             |
-|----------------------------|-----------------|-----------------------------|
-| `vrs.enabled: true`        | ✅ (via base[0]) | ❌ (en attendant vraie VRS) |
-| `vrs.enabled: false`       | ✅ (via base[0]) | ❌                          |
+**Hybride** est le mode par défaut. Le UM980 reçoit toujours le flux brut
+de `bases[0]` (donc le FIX RTK est garanti, comme en pont direct), mais
+le moteur VRS tourne en parallèle pour fournir une position interpolée
+multi-balises exposée dans l'UI tkinter, le dashboard HTTP et l'API
+REST/WS. Le RTCM synthétisé **n'est pas** envoyé au récepteur.
 
-Autrement dit, `vrs.enabled` ne change pas (encore) la précision RTK ; il
-contrôle uniquement la richesse de la télémétrie. L'effet « vraie VRS »
-nécessiterait de réparer `build_vrs_rtcm_1004` (74 bits/satellite au lieu
-des 125 du standard) et d'ajouter le forwarding des éphémérides — voir
-[`.claude/skills/nrtk-vrs-hybrid.md`](.claude/skills/nrtk-vrs-hybrid.md)
-pour la feuille de route.
+**VRS pure** est expérimental. Le récepteur reçoit :
+
+- depuis le flux brut, uniquement les éphémérides (messages 1019, 1020,
+  1042, 1044, 1045, 1046) — indispensables pour positionner les satellites ;
+- depuis le moteur VRS, un **RTCM 1005 conforme** (152 bits, ECEF signé)
+  annonçant une base virtuelle exactement à la position du rover, et un
+  **RTCM 1002 conforme** (Extended L1 only GPS, 74 bits/satellite, lock
+  time DF013 persistant) avec les pseudoranges et phases interpolées
+  depuis plusieurs balises.
+
+L'objectif de la VRS pure est de présenter au UM980 une baseline théorique
+de 0 m, ce qui accélère la résolution des ambiguïtés de phase entières et
+réduit l'erreur résiduelle d'atmosphère. La précision en altitude peut être
+meilleure si les balises sont bien réparties autour du rover. Le délai
+d'obtention du FIX est généralement plus long (30 s à 1 min) parce que
+le lock time DF013 repart de 0 à chaque démarrage.
+
+```yaml
+vrs:
+  enabled: true        # true = moteur VRS actif (hybride ou pure)
+  pure_mode: false     # true = pousse 1005+1002 au UM980 (VRS pure)
+  station_id: 4042     # DF003 inscrit dans les trames synthétisées
+```
+
+**Limites actuelles de la VRS pure** : pas de GLONASS (message 1012 non
+synthétisé), TOW courant utilisé tel quel sans alignement entre balises,
+CNR codé en dur à ≈ 45 dB-Hz. La feuille de route détaillée et les
+pointeurs d'implémentation sont dans
+[`.claude/skills/nrtk-vrs-hybrid.md`](.claude/skills/nrtk-vrs-hybrid.md).
+
+> Bonne pratique : démarrer en hybride pour valider la chaîne, puis
+> basculer en pure pour comparer la précision. Si le UM980 reste en
+> SinglePoint en pure, repasser en hybride en un changement de config
+> (le `pure_mode: false` suffit, pas besoin de redémarrer la session
+> NTRIP).
 
 ## Dashboard HTTP et API mobile
 
@@ -326,7 +357,10 @@ sérialisation : il n'est ni utile côté client ni nativement JSON.
   client Kotlin sur `http://<ip-du-pc>:8081/ws/position`. La WebSocket
   pousse un message JSON à chaque tour de boucle du moteur VRS (1 Hz).
   Pour une intégration plus simple, le polling REST sur `/api/status`
-  fonctionne aussi très bien.
+  fonctionne aussi très bien. **Feuille de route détaillée** dans
+  [`docs/android-integration-roadmap.md`](docs/android-integration-roadmap.md)
+  (3 phases : lecture seule → reconfiguration des balises → pipeline
+  complet avec GNSS branché au mobile).
 - **Démo** : activer les deux. Le dashboard pour l'audience humaine, l'API
   pour une éventuelle app de démonstration mobile.
 

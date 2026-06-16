@@ -141,6 +141,29 @@ def start_real_ntrip(base_cfg: dict, credentials: dict,
     return thread, client
 
 
+# Messages RTCM3 d'éphémérides (orbites + horloges satellites). Le UM980 en a
+# besoin pour faire du RTK ; en mode VRS pure, on les forwarde explicitement
+# depuis le flux brut puisque les observations passent par les trames synthétisées.
+#   1019 = GPS broadcast ephemeris
+#   1020 = GLONASS broadcast ephemeris
+#   1042 = BeiDou broadcast ephemeris
+#   1044 = QZSS broadcast ephemeris
+#   1045 = Galileo F/NAV broadcast ephemeris
+#   1046 = Galileo I/NAV broadcast ephemeris
+EPHEMERIS_RTCM_TYPES = frozenset({1019, 1020, 1042, 1044, 1045, 1046})
+
+
+def _peek_rtcm_type(frame: bytes) -> Optional[int]:
+    """Extrait le numéro de message d'une trame RTCM3 sans la décoder.
+
+    Structure RTCM3 : `0xD3 | 6 réservés + 10 bits longueur | payload | CRC-24Q`.
+    Les 12 premiers bits du payload contiennent DF002 (message number).
+    """
+    if len(frame) < 5 or frame[0] != 0xD3:
+        return None
+    return (frame[3] << 4) | (frame[4] >> 4)
+
+
 # ---------------------------------------------------------------------------
 # Application principale
 # ---------------------------------------------------------------------------
@@ -215,17 +238,34 @@ class NrtkApp:
         """Appelé à chaque trame RTCM reçue d'une base."""
         self._decoder.decode(base_id, frame)
 
-        # --- Forward RTCM brut vers le UM980 (patch hybride) ---
-        # On forwarde TOUJOURS le flux brut de la première balise vers le récepteur,
-        # que `vrs.enabled` soit true (mode hybride) ou false (pont direct).
-        # Justification : la synthèse RTCM 1004/1005 actuelle n'est pas conforme
-        # au standard 10403.3 — le UM980 la rejette et reste en SINGLE. Le moteur
-        # VRS continue de tourner pour la télémétrie (UI, API, dashboard), mais
-        # le FIX RTK est assuré par le flux brut de base[0]. Voir le skill
-        # `nrtk-vrs-hybrid` pour le détail et les pistes de vraie VRS.
+        # --- Forward RTCM vers le UM980 ---
+        # Trois modes possibles, sélectionnés par config (vrs.enabled, vrs.pure_mode) :
+        #   • PONT DIRECT  (enabled=false)              : forward TOUT le flux brut
+        #     de la 1ère balise → FIX RTK garanti, moteur VRS éteint.
+        #   • HYBRIDE      (enabled=true,  pure=false)  : forward TOUT le flux brut
+        #     de la 1ère balise + moteur VRS tournant pour la télémétrie. La
+        #     synthèse RTCM n'est PAS envoyée au récepteur. Mode par défaut.
+        #   • VRS PURE     (enabled=true,  pure=true)   : forward UNIQUEMENT les
+        #     éphémérides depuis le flux brut, et envoie les 1005+1002 synthétisés
+        #     (cf. _on_position_result). Expérimental — voir le skill
+        #     `nrtk-vrs-hybrid`. Tester en conditions terrain et garder une
+        #     option de bascule rapide en hybride si pas de FIX.
         if not self._mock_sensor and self._serial_manager and self._cfg["bases"]:
             if base_id == self._cfg["bases"][0]["id"]:
-                self._serial_manager.write_data(frame)
+                vrs_cfg   = self._cfg.get("vrs", {}) or {}
+                pure_mode = bool(vrs_cfg.get("enabled", True)) \
+                            and bool(vrs_cfg.get("pure_mode", False))
+                if pure_mode:
+                    # Routage sélectif : on ne laisse passer que les éphémérides.
+                    # Les observations (1002/1004/1077/1012/1087…) et la position
+                    # de la base réelle (1005/1006) sont remplacées par notre
+                    # synthèse VRS poussée dans _on_position_result.
+                    msg_type = _peek_rtcm_type(frame)
+                    if msg_type in EPHEMERIS_RTCM_TYPES:
+                        self._serial_manager.write_data(frame)
+                else:
+                    # Hybride ou pont direct : forward intégral du flux brut.
+                    self._serial_manager.write_data(frame)
 
         # Mise à jour statut UI
         if self._ui:
@@ -284,13 +324,19 @@ class NrtkApp:
         if self._api_server is not None:
             self._api_server.publish_result(result)
 
-        # --- NE PAS pousser result.vrs_rtcm vers la série (patch hybride) ---
-        # L'encodage 1004 (74 bits/sat au lieu de 125) et 1005 historique
-        # ne passe pas le décodeur du UM980. Les corrections envoyées au
-        # récepteur sont celles du flux brut de base[0] (forwarded dans
-        # _on_rtcm). result.vrs_rtcm reste calculé et accessible côté UI/API
-        # pour la télémétrie, mais n'atteint pas le port série. À réactiver
-        # lorsque build_vrs_rtcm_1004 sera conforme à RTCM 10403.3.
+        # --- Envoi du flux VRS synthétisé au port série (mode pure uniquement) ---
+        # Désormais, build_vrs_rtcm_1005 et build_vrs_rtcm_1002 produisent des
+        # trames conformes à RTCM 10403.3 (152 bits / 64+74 bits par sat) avec
+        # un lock time DF013 persistant. En mode VRS pure, on les pousse au
+        # UM980 ; en mode hybride, on laisse les corrections brutes de base[0]
+        # forwarded dans _on_rtcm faire le travail. En mode mock, pas de port
+        # série, rien à pousser.
+        vrs_cfg   = self._cfg.get("vrs", {}) or {}
+        pure_mode = bool(vrs_cfg.get("enabled", True)) \
+                    and bool(vrs_cfg.get("pure_mode", False))
+        if (not self._mock_sensor and self._serial_manager
+                and pure_mode and result.vrs_rtcm):
+            self._serial_manager.write_data(result.vrs_rtcm)
 
         # Log console
         if self._mock_sensor:

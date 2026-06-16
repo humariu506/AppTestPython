@@ -79,18 +79,33 @@ rtklib:
   fix_timeout: 60
 
 # --- VRS ---
-# Dans les deux modes ci-dessous, le flux RTCM brut de la première balise est
-# forwardé au UM980 et garantit le FIX RTK. La différence porte sur ce qui se
-# passe à côté pour la télémétrie/UI/API :
-#   enabled: true  → mode HYBRIDE — le moteur VRS calcule l'interpolation
-#                    multi-balises et publie les positions VRS dans l'UI/API.
-#                    Le RTCM synthétisé n'est PAS poussé vers le UM980 tant
-#                    que son encodage 1004 n'est pas conforme (voir le skill
-#                    `nrtk-vrs-hybrid` pour le détail).
-#   enabled: false → mode PONT DIRECT — le moteur VRS ne tourne pas, seule la
-#                    position du UM980 (GGA) est affichée.
+# Trois modes de fonctionnement, sélectionnés par les flags `enabled` et `pure_mode` :
+#
+#   enabled: false                  → PONT DIRECT
+#     Le flux RTCM brut de la 1ère balise est forwardé tel quel au UM980.
+#     Le moteur VRS ne tourne pas. Mode le plus simple, garantit le FIX RTK.
+#
+#   enabled: true, pure_mode: false → HYBRIDE (défaut, recommandé)
+#     Flux brut de la 1ère balise forwardé au UM980 + moteur VRS actif pour
+#     la télémétrie (UI / dashboard HTTP / API REST/WS). Les trames
+#     synthétisées NE sont PAS envoyées au récepteur. Le FIX vient du flux
+#     mono-base classique.
+#
+#   enabled: true, pure_mode: true  → VRS PURE (expérimental)
+#     Seules les éphémérides (1019/1020/1042/1044/1045/1046) du flux brut
+#     sont forwardées. Les observations + la position de la base sont
+#     remplacées par 1005 + 1002 synthétisés à la position du rover
+#     (baseline théorique = 0). Demande un encodage strictement conforme
+#     du 1002 et un lock-time persistant — voir le skill `nrtk-vrs-hybrid`
+#     pour le détail.
+#
+# station_id : valeur du DF003 (Reference Station ID) inscrite dans les trames
+#              1005/1002 synthétisées. Choisir une valeur libre (≥ 1, ≤ 4095)
+#              qui ne collisionne pas avec une vraie station Centipede.
 vrs:
   enabled: true
+  pure_mode: false
+  station_id: 4042
 
 # --- Mock ---
 mock:

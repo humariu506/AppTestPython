@@ -308,29 +308,122 @@ def build_vrs_rtcm_1005(lat: float, lon: float, alt: float, ref_id: int = 1,
     return _rtcm3_frame(1005, payload)
 
 
-def build_vrs_rtcm_1004(corrections: dict[int, dict], ref_id: int = 1) -> bytes:
-    """RTCM 1004 : pseudoranges VRS interpolés pour RTKLIB."""
-    sats = list(corrections.items())[:12]
+def _encode_lock_time_7b(seconds: float) -> int:
+    """RTCM 10403.3 DF013/DF019 — encodage 7 bits de la durée de verrouillage de
+    phase. Table 4.3-3 du standard, échelle non linéaire (résolution plus fine
+    pour les courtes durées).
+
+    Retourne un entier 0..127 :
+        0-23  : 0..23 s            (1 s/pas)
+        24-47 : 24..71 s           (2 s/pas)
+        48-71 : 72..167 s          (4 s/pas)
+        72-95 : 168..359 s         (8 s/pas)
+        96-119: 360..743 s         (16 s/pas)
+        120-126: 744..935 s        (32 s/pas)
+        127   : ≥ 937 s
+    """
+    s = max(0, int(seconds))
+    if s < 24:    return s
+    if s < 72:    return 24 + (s - 24) // 2
+    if s < 168:   return 48 + (s - 72) // 4
+    if s < 360:   return 72 + (s - 168) // 8
+    if s < 744:   return 96 + (s - 360) // 16
+    if s < 937:   return min(126, 120 + (s - 744) // 32)
+    return 127
+
+
+def build_vrs_rtcm_1002(corrections: dict[int, dict],
+                        lock_times: dict[int, float],
+                        ref_id: int = 1, sync: bool = False) -> bytes:
+    """RTCM 1002 — Extended L1-Only GPS RTK Observables.
+
+    Conformité RTCM 10403.3. C'est le message correct pour publier les
+    observations GPS L1 seules avec IPMA et CNR — ce que produit notre
+    interpolateur VRS (pas de L2 pour l'instant).
+
+    Layout : en-tête 64 bits + 74 bits par satellite (= 6+1+24+20+7+8+8).
+
+    En-tête (DF002..DF008) :
+        DF002 Message Number       12   (1002)
+        DF003 Reference Station ID 12
+        DF004 GPS Epoch Time TOW   30   (ms)
+        DF005 Synchronous GNSS     1    (1 si d'autres messages suivent)
+        DF006 No. Sat Signals      5    (n)
+        DF007 Smoothing Indicator  1    (0 = non lissé)
+        DF008 Smoothing Interval   3    (0)
+        ────────────────────────────────
+        Total                      64   (= 8 octets pile)
+
+    Satellite (DF009..DF015) :
+        DF009 Satellite ID         6
+        DF010 L1 Code Indicator    1    (0 = C/A code)
+        DF011 L1 Pseudorange       24   (unsigned, 0.02 m, valeur mod 299792.458 m)
+        DF012 L1 PhaseRange − PR   20   (signed, 0.0005 m)
+        DF013 L1 Lock Time         7    (encodé via _encode_lock_time_7b)
+        DF014 IPMA                 8    (modulus ambiguity)
+        DF015 L1 CNR               8    (résolution 0.25 dB-Hz)
+        ────────────────────────────────
+        Total                      74
+    """
+    sats = list(corrections.items())[:31]   # DF006 sur 5 bits
     n = len(sats)
     tow_ms = int((time.time() % 604800) * 1000) & ((1 << 30) - 1)
 
-    # Header 64 bits : type(12)+id(12)+tow(30)+sync(1)+n(5)+smooth(4)
-    hdr = (1004 << 52) | (ref_id << 40) | (tow_ms << 10) | (0 << 9) | (n << 4) | 0
+    hdr = 0
+    hdr = (hdr << 12) | (1002 & 0xFFF)
+    hdr = (hdr << 12) | (ref_id & 0xFFF)
+    hdr = (hdr << 30) | tow_ms
+    hdr = (hdr << 1)  | (1 if sync else 0)
+    hdr = (hdr << 5)  | (n & 0x1F)
+    hdr = (hdr << 1)  | 0     # divergence-free smoothing : non
+    hdr = (hdr << 3)  | 0     # smoothing interval : 0
     payload = hdr.to_bytes(8, "big")
 
-    for prn, corr in sats:
-        pr = corr["pseudorange_vrs"]
-        ph = corr["phase_vrs"] / L1_WAVE_GPS
-        amb     = int(pr / 299792.458) & 0xFF
-        pr_mod  = int((pr - amb * 299792.458) / 0.02) & 0xFFFFFF
-        ph_raw  = int(ph / 0.0005) & 0xFFFFF
-        snr_raw = 160  # ~40 dB-Hz fixe
-        # 74 bits par satellite, packés sur 10 octets
-        s = ((prn & 0x3F) << 68) | (pr_mod << 44) | \
-            ((ph_raw & 0xFFFFF) << 24) | (0 << 17) | (amb << 8) | snr_raw
-        payload += s.to_bytes(10, "big")
+    if n == 0:
+        return _rtcm3_frame(1002, payload)
 
-    return _rtcm3_frame(1004, payload)
+    # Tous les satellites concaténés bit-par-bit, puis pad LSB pour
+    # aligner sur frontière octet (RTCM 10403.3 §3.4.5).
+    bits_acc = 0
+    for prn, corr in sats:
+        pr_obs = float(corr["pseudorange_vrs"])
+        ph_m   = float(corr["phase_vrs"])      # déjà en mètres (voir interpolateur)
+
+        # IPMA = nombre entier de modules de 299792.458 m
+        amb = int(pr_obs // 299792.458)
+        if amb < 0:   amb = 0
+        if amb > 255: amb = 255
+        pr_mod_m = pr_obs - amb * 299792.458
+
+        df011 = int(round(pr_mod_m / 0.02)) & 0xFFFFFF       # 24 bits unsigned
+        df012 = _to_signed_bits(ph_m - pr_obs, 20)           # 20 bits signed
+        df013 = _encode_lock_time_7b(lock_times.get(prn, 0)) & 0x7F
+        df014 = amb & 0xFF
+        df015 = 180 & 0xFF                                    # ~45 dB-Hz fixe
+
+        sat_bits = 0
+        sat_bits = (sat_bits << 6)  | (prn & 0x3F)
+        sat_bits = (sat_bits << 1)  | 0                       # DF010 = C/A
+        sat_bits = (sat_bits << 24) | df011
+        sat_bits = (sat_bits << 20) | df012
+        sat_bits = (sat_bits << 7)  | df013
+        sat_bits = (sat_bits << 8)  | df014
+        sat_bits = (sat_bits << 8)  | df015
+        bits_acc = (bits_acc << 74) | sat_bits
+
+    total_bits  = n * 74
+    total_bytes = (total_bits + 7) // 8
+    pad         = total_bytes * 8 - total_bits
+    payload    += (bits_acc << pad).to_bytes(total_bytes, "big")
+
+    return _rtcm3_frame(1002, payload)
+
+
+# Conservé temporairement pour les imports historiques. Délègue à 1002.
+# À supprimer quand plus aucun caller n'en dépend.
+def build_vrs_rtcm_1004(corrections: dict[int, dict], ref_id: int = 1) -> bytes:
+    """⚠️ Deprecated — renvoie en réalité un RTCM 1002 conforme (GPS L1 only)."""
+    return build_vrs_rtcm_1002(corrections, {}, ref_id=ref_id)
 
 
 # ---------------------------------------------------------------------------
@@ -529,11 +622,20 @@ class VrsEngine:
         self._solver           = RtklibSolver(cfg.get("rtklib", {}))
         self._result_callback  = result_callback
         self._geoid            = get_geoid()
+        self._station_id       = int(cfg.get("vrs", {}).get("station_id", 1))
 
         mock = cfg.get("mock", {})
         self._rover_lat: float = mock.get("rover_lat", 48.83)
         self._rover_lon: float = mock.get("rover_lon", 2.37)
         self._rover_alt: float = mock.get("rover_alt", 42.0)
+
+        # Suivi du lock time par satellite (en secondes, incrémenté à chaque
+        # époque où le satellite reste observé). Un saut de cycle est
+        # détecté par disparition du PRN dans `corrections` → on remet à 0.
+        # Nécessaire pour produire un DF013 (RTCM 1002 §3.5.5) crédible et
+        # permettre au UM980 de résoudre les ambiguïtés entières.
+        self._lock_times: dict[int, float] = {}
+        self._last_epoch_time: Optional[float] = None
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -552,6 +654,28 @@ class VrsEngine:
             self._rover_lat = lat
             self._rover_lon = lon
             self._rover_alt = alt
+
+    def _update_lock_times(self, observed_prns: set[int]) -> None:
+        """Met à jour le compteur de lock time par satellite.
+
+        - Si un PRN reste observé d'une époque à l'autre, le compteur est
+          incrémenté de la durée écoulée → durée de verrouillage croissante.
+        - Si un PRN disparaît (cycle slip, masquage), son compteur est purgé
+          → la trame suivante repartira de 0 et signalera une perte de lock
+          au récepteur, qui devra ré-initialiser ses ambiguïtés sur ce sat.
+        - Les nouveaux PRN sont initialisés à 0.
+        """
+        now = time.time()
+        dt = (now - self._last_epoch_time) if self._last_epoch_time else self.COMPUTE_INTERVAL
+        self._last_epoch_time = now
+
+        # Purge des satellites disparus
+        gone = set(self._lock_times.keys()) - observed_prns
+        for prn in gone:
+            del self._lock_times[prn]
+        # Incrément pour ceux qui restent + init pour les nouveaux
+        for prn in observed_prns:
+            self._lock_times[prn] = self._lock_times.get(prn, 0.0) + dt
 
     @property
     def last_result(self) -> Optional[PositionResult]:
@@ -623,10 +747,20 @@ class VrsEngine:
             ))
             return
 
-        # RTCM VRS avec altitude ellipsoïdale
-        vrs_rtcm = build_vrs_rtcm_1005(r_lat, r_lon, r_alt_ellip) + \
-                   build_vrs_rtcm_1004(corrections)
-        logger.debug(f"RTCM VRS construit ({len(vrs_rtcm)} bytes) — antérieur au solveur (h={r_alt_ellip:.3f} m)")
+        # Suivi du lock time pour DF013 (cf. RTCM 10403.3 §3.5.5)
+        self._update_lock_times(set(corrections.keys()))
+
+        # RTCM VRS avec altitude ellipsoïdale.
+        # — 1005 conforme (152 bits, ECEF signé, flags GPS/GLO).
+        # — 1002 conforme (GPS L1 only, 74 bits/sat, lock time persistant).
+        vrs_rtcm = build_vrs_rtcm_1005(r_lat, r_lon, r_alt_ellip,
+                                       ref_id=self._station_id,
+                                       gps=True, glonass=True) + \
+                   build_vrs_rtcm_1002(corrections, self._lock_times,
+                                       ref_id=self._station_id)
+        logger.debug(f"RTCM VRS construit ({len(vrs_rtcm)} bytes), "
+                     f"{len(corrections)} sats, "
+                     f"max lock={max(self._lock_times.values(), default=0):.0f}s")
 
         result = self._solver.solve(r_lat, r_lon, r_alt_ellip, vrs_rtcm,
                                     corrections, n_bases)

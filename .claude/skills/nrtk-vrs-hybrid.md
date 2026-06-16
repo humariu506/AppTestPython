@@ -1,105 +1,154 @@
 ---
 name: nrtk-vrs-hybrid
-description: Charge le contexte du patch hybride VRS (forward du flux RTCM brut de la première balise vers le UM980 + moteur VRS pour télémétrie seulement). À invoquer dès qu'on discute du FIX RTK, de l'option `vrs.enabled`, du forwarding de trames RTCM3 vers le port série, ou qu'on envisage d'implémenter une « vraie » VRS conforme au standard 10403.3. Documente les invariants, la raison du choix actuel, et la feuille de route pour passer à une VRS complète.
+description: Charge le contexte des trois modes VRS de l'application (pont direct, hybride, VRS pure). À invoquer dès qu'on discute du FIX RTK, de l'option `vrs.enabled` ou `vrs.pure_mode`, du forwarding de trames RTCM3 vers le port série, ou des messages synthétisés 1005/1002. Documente la matrice des modes, les invariants par mode, ce qui est conforme aujourd'hui dans la synthèse RTCM, et les étapes encore ouvertes (GLONASS 1012, alignement TOW).
 ---
 
-# Patch hybride VRS — savoir-faire interne
+# VRS — savoir-faire interne
 
-Référence : ce patch a été mis en place après le constat que le mode `vrs.enabled: true` empêchait le UM980 d'établir un FIX RTK (il restait en SinglePoint). La cause racine était l'encodage non-conforme des trames 1004/1005 synthétisées par `vrs_engine.py` (voir le skill `nrtk-project` pour le détail des bugs RTCM3).
+Référence : ce skill couvre la chronologie de mise au point du chemin VRS, depuis l'état initial où `vrs.enabled: true` empêchait le UM980 d'obtenir un FIX RTK (à cause des encodages 1004/1005 non conformes) jusqu'à l'introduction d'un mode hybride (FIX garanti, télémétrie complète) et d'un mode VRS pure expérimental (synthèse 1005 + 1002 conforme + éphémérides forwardées).
 
-## Invariants actuels
+## Matrice des modes
 
-À partir du patch hybride, deux invariants tiennent en mode capteur réel :
+Trois modes, sélectionnés par `config.yaml: vrs.enabled` × `vrs.pure_mode` :
 
-1. **Le flux RTCM3 brut de la première balise est toujours forwardé** vers le UM980 via le port série, **indépendamment de `vrs.enabled`**. C'est ce flux qui assure le FIX RTK (mono-base classique).
-2. **Le `vrs_rtcm` synthétisé par le moteur VRS n'est jamais poussé** au port série tant que son encodage n'est pas conforme. Il reste calculé et publié dans le `PositionResult` (UI tkinter, dashboard HTTP, API REST/WS) pour la télémétrie, mais n'atteint pas le récepteur.
+| `enabled` | `pure_mode` | Nom court    | Flux RTCM vers UM980                                          | Moteur VRS            |
+|:---------:|:-----------:|--------------|---------------------------------------------------------------|-----------------------|
+| `false`   | *           | Pont direct  | flux brut intégral de `bases[0]`                              | éteint                |
+| `true`    | `false`     | **Hybride**  | flux brut intégral de `bases[0]`                              | actif, télémétrie seule |
+| `true`    | `true`      | VRS pure     | éphémérides du flux brut + 1005/1002 synthétisés au rover     | actif, RTCM poussé    |
 
-Ces deux règles sont implémentées dans [`files/main.py`](files/main.py) — chercher les commentaires « **patch hybride** » dans `_on_rtcm` et `_on_position_result`.
+Par défaut : **hybride**. Le pont direct est l'option simple si on veut désactiver tout calcul. La VRS pure est **expérimentale** : à activer en conditions terrain, avec un plan B (basculer en hybride) si le UM980 reste en SinglePoint.
 
-## Sémantique de `vrs.enabled`
+Implémentation : voir les commentaires « Forward RTCM vers le UM980 » dans `_on_rtcm` ([files/main.py](files/main.py)) et « Envoi du flux VRS synthétisé » dans `_on_position_result`.
 
-Avant le patch, `vrs.enabled` choisissait entre « calcul VRS poussé au UM980 » et « pont direct ». Après le patch, sa sémantique est plus douce :
+## Sémantique du flag `vrs.enabled`
 
-| Valeur | Forward brut → UM980 | Moteur VRS tourne | Position affichée dans l'UI mock |
-|---|---|---|---|
-| `true` | ✅ | ✅ (télémétrie) | celle du moteur VRS |
-| `false` | ✅ | ❌ | NMEA brut du UM980 |
+- En **mode mock** : `enabled: true` fait piloter l'UI par le moteur VRS (position interpolée), `enabled: false` laisse le mock générer la position directement.
+- En **mode capteur réel** : `enabled` ne change pas la position affichée dans l'UI tkinter (toujours la GGA du UM980 via `_on_real_sensor_ui_update`). Il contrôle uniquement la richesse de la télémétrie côté API/dashboard et, croisé avec `pure_mode`, le contenu du flux série.
 
-En mode capteur réel, l'UI tkinter affiche dans les deux cas la position issue de la GGA renvoyée par le UM980 (`_on_real_sensor_ui_update` dans `main.py`). La position « VRS calculée » apparaît à côté, comme repère, mais ne pilote pas le FIX.
+## État de la synthèse RTCM (au moment de l'écriture)
 
-## Ce qui a été corrigé incidentellement
+### ✅ Conforme RTCM 10403.3
 
-Pendant le patch, `build_vrs_rtcm_1005` dans [`files/vrs_engine.py`](files/vrs_engine.py) a été réécrit pour être **strictement conforme à RTCM 10403.3** :
+- **`build_vrs_rtcm_1005`** ([files/vrs_engine.py](files/vrs_engine.py)) — 152 bits exactement, ECEF X/Y/Z en complément à deux signé 38 bits via `_to_signed_bits`, flags DF022/DF023/DF024/DF141, DF142 et DF364 présents. Smoke-tests passent (longueur trame, type, ref ID).
+- **`build_vrs_rtcm_1002`** ([files/vrs_engine.py](files/vrs_engine.py)) — RTCM 1002 (Extended L1-Only GPS RTK Observables), en-tête 64 bits, 74 bits/satellite, padding LSB pour aligner sur octet. Signe respecté pour DF012 (PhaseRange − Pseudorange). DF010 = 0 (C/A code). DF015 = 180 (≈ 45 dB-Hz fixe — voir limites).
+- **`_encode_lock_time_7b`** — encodage DF013 selon la table 4.3-3 du standard (échelle non linéaire, 0..127).
+- **Suivi du lock time par satellite** dans `VrsEngine._lock_times` ([files/vrs_engine.py](files/vrs_engine.py)) — incrémenté à chaque époque où le PRN reste observé, purgé sur disparition (cycle slip = perte de lock signalée au récepteur).
 
-- 152 bits (= 19 octets) au lieu de 148 — les flags DF022/DF023/DF024/DF141, DF142 et DF364 sont maintenant présents.
-- ECEF X/Y/Z encodés en **complément à deux signé** sur 38 bits (l'ancien code masquait simplement les bits, ce qui corrompait les coordonnées négatives).
-- Construction du payload bit-par-bit en MSB-first (`bits = (bits << n) | value`) pour éviter le décalage de 4 bits introduit par l'ancien `to_bytes(19, "big")` sur un entier de 148 bits.
-- Helper `_to_signed_bits(value_m, n_bits)` réutilisable pour les futurs encodages signés (1006, 1033, etc.).
+### ⚠️ Limites assumées
 
-Ce 1005 corrigé n'est *pas* utilisé en routine (puisque le patch hybride forwarde le 1005 brut de Centipede), mais il est testé/utilisable et constitue la première brique d'une vraie VRS.
+- **CNR codé en dur** à 180 (≈ 45 dB-Hz). Idéalement on devrait propager le SNR mesuré par chaque base via `SatObs.snr_L1` jusqu'à l'interpolateur, puis pondérer dans DF015. Comme l'interpolateur ne le fait pas encore, on reste sur une valeur constante crédible.
+- **Pas de GLONASS** dans la synthèse (le 1012 n'est pas généré). Voir étape « À faire » ci-dessous.
+- **TOW** courant utilisé tel quel via `time.time() % 604800` au lieu d'un alignement entre les époques des balises. Acceptable pour un test simple, à fixer pour une VRS robuste.
+- **`build_vrs_rtcm_1004`** est conservé comme wrapper deprecated qui délègue à 1002 — à supprimer une fois qu'on a confirmé qu'aucun caller externe ne s'en sert.
 
-`build_vrs_rtcm_1004` reste **non conforme** (74 bits/satellite au lieu des 125 du standard). Le réparer demande d'ajouter la partie L2 complète (DF016 à DF020). Voir « feuille de route » ci-dessous.
-
-## Pourquoi pas remplacer juste le 1005 par celui synthétisé au rover ?
+## Pourquoi pas remplacer juste le 1005 sans toucher aux observations ?
 
 C'était la première intuition pour faire « croire » au UM980 que la base est au rover (baseline ≈ 0 → FIX instantané). Mais c'est **incorrect** sans rééécriture des observations : si on annonce la base au rover mais qu'on envoie des observations issues d'une base réelle à 10 km, le calcul différentiel diverge — le UM980 voit des delta-pseudoranges incohérents avec la baseline annoncée et soit rejette le fix, soit converge sur une position fausse.
 
-Une vraie VRS recalcule les pseudoranges (et les phases) comme si une base virtuelle observait depuis le rover. C'est ce que font les casters commerciaux. Tant que cette rééécriture n'est pas en place, le 1005 réel de Centipede doit rester en place pour cohérence avec les observations brutes reçues.
+C'est précisément ce que fait `VrsInterpolator.interpolate()` ([files/vrs_engine.py](files/vrs_engine.py)) : il recompose les observations comme si une base virtuelle observait depuis le rover. Le mode VRS pure pousse ces observations dans un 1002 conforme. La conformité du 1005 seule ne suffit donc pas — c'est la cohérence 1005 ↔ 1002 qui fait la VRS.
 
-## Feuille de route pour une vraie VRS
+## Feuille de route — état d'avancement
 
-Si on veut faire évoluer le patch hybride vers une vraie VRS (multi-balises, baseline théorique ≈ 0) :
+L'objectif est de passer de la VRS expérimentale à une VRS robuste en production.
 
-1. **Réparer `build_vrs_rtcm_1004`** pour qu'il produise 125 bits/satellite avec tous les champs L2 (DF016 = code indicator, DF017 = pseudorange diff L2-L1, DF018 = phase L2 vs L1, DF019 = lock time L2, DF020 = CNR L2). À faire en s'appuyant sur le pattern bit-par-bit de `_to_signed_bits` + chaînage `bits = (bits << n) | v`.
-2. **Maintenir le lock time** entre époques au lieu de remettre à 0 à chaque trame. Le UM980 a besoin de continuité pour résoudre les ambiguïtés entières — c'est ce qui fait toute la différence entre FLOAT et FIX.
-3. **Forwarder les éphémérides** (1019 GPS, 1020 GLONASS, 1042 BeiDou, 1045/1046 Galileo) depuis l'une des balises Centipede. Aujourd'hui le patch hybride forwarde *tout* le stream donc ces messages passent ; si on bascule en « vraie VRS pure », il faudra les router explicitement.
-4. **Encoder GLONASS** via le message 1012 (équivalent du 1004 pour GLO) — Centipede diffuse de la GLO, et le UM980 sait la consommer. Doubler le nombre de satellites disponibles améliore drastiquement la résolution d'ambiguïtés.
-5. **Aligner les TOW** entre balises. Les casters Centipede n'envoient pas leurs trames de manière synchronisée — l'interpolation VRS doit fixer un TOW commun et corriger chaque observation par dérive d'horloge.
-6. **Tester sans `pyrtcm`**. La bibliothèque a été désactivée parce qu'elle interférait avec la réception GNSS (voir le skill `nrtk-project`). Tant que cette interférence n'est pas comprise, ne pas la réactiver pour faire le décodage des trames Centipede en VRS pure.
+| # | Étape                                                            | Statut       |
+|---|------------------------------------------------------------------|--------------|
+| 1 | Réparer l'encodage du message d'observations GPS L1              | ✅ (1002 conforme) |
+| 2 | Maintenir le lock time entre époques                             | ✅ (`_lock_times`)  |
+| 3 | Forwarder explicitement les éphémérides en mode VRS pure         | ✅ (`EPHEMERIS_RTCM_TYPES` + `_peek_rtcm_type` dans main.py) |
+| 4 | Encoder GLONASS (message 1012)                                   | ❌ TODO       |
+| 5 | Aligner les TOW entre balises au moment de l'interpolation       | ❌ TODO       |
+| 6 | Tester sans pyrtcm en condition réelle                           | À valider    |
 
-Étapes 1+2 suffisent à atteindre un FLOAT côté UM980 sur la VRS synthétisée. Atteindre un FIX demande typiquement 3-5 époques continues avec lock time stable.
+### Étape 4 — GLONASS 1012 (non faite)
 
-## Bascule retour : comment retrouver le comportement pré-patch
+Pour propager les observations GLONASS dans la VRS, il faudrait :
 
-Si pour une raison de diagnostic on veut tester le comportement « pure VRS » (synthétisé envoyé seul, brut bloqué), il faut :
+1. Étendre `VrsInterpolator` pour distinguer GPS de GLO : itérer sur `(prn, system)` au lieu de `prn` seul, et garder une longueur d'onde par-satellite (GLO utilise FDMA, longueur dépendante du FCN).
+2. Tracker le FCN (Frequency Channel Number, −7 à +6) par satellite. Aujourd'hui le décodeur l'extrait peut-être déjà — vérifier `rtcm_decoder.py` autour de `SatObs`. Sinon le récupérer dans les éphémérides 1020.
+3. Écrire `build_vrs_rtcm_1012` sur le modèle de `build_vrs_rtcm_1002` :
+   - En-tête 65 bits (un bit GLONASS-Smoothing-Indicator de plus que 1002).
+   - 130 bits par satellite (similaire à 1004 mais avec FCN 5 bits encodé en plus).
+   - Réutiliser `_to_signed_bits` et `_encode_lock_time_7b`.
 
-1. Dans `main.py:_on_rtcm`, restreindre le forward au cas `not vrs_enabled` (comportement historique).
-2. Dans `main.py:_on_position_result`, décommenter la branche qui pousse `result.vrs_rtcm` au port série.
+Sans 1012, le UM980 reçoit moins de satellites → ambiguïtés plus longues à fixer, voire FLOAT permanent dans des environnements urbains.
 
-C'est utile uniquement pour vérifier qu'une correction d'encodage (par exemple un `build_vrs_rtcm_1004` réparé) débloque enfin un FIX en VRS pure. **Ne pas faire ça en production** tant qu'on n'a pas un encodage testé bit à bit contre le standard.
+### Étape 5 — Alignement TOW (non faite)
+
+Aujourd'hui `_compute_epoch` prend les observations brutes telles que stockées par `ObservationStore` et passe le `time.time()` courant dans le 1002 généré. Conséquences :
+
+- Les balises Centipede n'émettent pas de manière synchronisée — un epoch à 1 Hz contient des observations de balises voisines à des instants différents (jusqu'à 500 ms d'écart).
+- Le TOW inscrit dans le 1002 ne correspond pas exactement aux observations interpolées, ce qui peut introduire une erreur résiduelle de quelques cm à quelques dm.
+
+Fix idéal :
+
+1. Snapshotter `epochs` à un TOW cible (ex. dernier multiple de 1 s).
+2. Pour chaque observation, propager la mesure du TOW source au TOW cible en utilisant la dérive d'horloge et le taux Doppler.
+3. Inscrire ce TOW cible dans le 1002.
+
+Implique de tracker le Doppler par satellite (DF018 dans le 1004 — pas dans le 1002), donc ne se fait pas sans passer à 1004 complet.
+
+### Étape 6 — Test sans pyrtcm
+
+`pyrtcm` est désactivé dans `pyproject.toml` parce qu'il interférait avec la réception GNSS (voir le skill `nrtk-project`). Le mode VRS pure doit être validé sur le terrain sans le réactiver — sinon on ne peut pas distinguer un bug de synthèse d'un effet pyrtcm.
+
+## Bascule retour : retrouver le pont direct
+
+Pour diagnostic, si la VRS pure ne donne pas de FIX, basculer rapidement :
+
+```yaml
+vrs:
+  enabled: true
+  pure_mode: false   # ← bascule en hybride immédiate, FIX garanti via flux brut
+```
+
+Si l'hybride ne donne pas non plus de FIX, la cause est ailleurs (NTRIP, antenne, configuration UM980), pas dans la synthèse VRS.
 
 ## Points d'attention
 
 ### Le mode mock continue de fonctionner
 
-Le patch hybride ne touche au port série que si `not self._mock_sensor`. En mode mock complet, aucun forward de RTCM n'a lieu (il n'y a pas de UM980 réel), et le moteur VRS pilote l'UI comme avant.
+Aucun forward RTCM n'a lieu en mode mock (`self._mock_sensor` est `True`). `pure_mode` est donc ignoré en mock — le moteur VRS pilote toujours l'UI directement.
 
-### Le mode `vrs.enabled: false` reste utile
+### Lock time réinitialisé à chaque démarrage
 
-C'est le mode « pont RTCM direct » historique, sans calcul VRS. Plus léger côté CPU, et pratique pour valider la chaîne d'acquisition pure. Garder cette option, même si la sémantique est désormais très proche du mode hybride (la seule différence est que le moteur VRS ne tourne pas).
+Le dict `_lock_times` est initialisé à vide au démarrage de l'application. La première trame 1002 envoyée aura donc des DF013 = 0 pour tous les satellites, ce qui demande au UM980 de redémarrer ses ambiguïtés. C'est normal après un cold start — comptez ~30 s avant FIX.
 
-### Diagnostic « pas de FIX » après le patch
+### `station_id` (DF003) collision
 
-Si après le patch le UM980 reste en SinglePoint :
+Le `vrs.station_id` (4042 par défaut) est inscrit dans le 1005 et le 1002 synthétisés. Il ne doit pas collisionner avec un ID utilisé par une vraie balise Centipede de la même session, sinon le UM980 voit des positions contradictoires sous la même station ID et invalide les corrections.
 
-1. Vérifier le forward brut : un `logger.debug` dans `_on_rtcm` peut compter les trames forwardées. Si `0`, c'est que `base_id != self._cfg["bases"][0]["id"]` (mauvaise config) ou que `_serial_manager` est `None`.
-2. Vérifier que `bases[0]` est bien atteignable (état NTRIP « connecté ✓ »). Si la balise prioritaire perd la connexion, on perd aussi le FIX — il faudrait un fallback automatique vers `bases[1]`, qui n'existe pas encore.
-3. Vérifier que le UM980 reçoit bien les éphémérides. Sur un démarrage à froid, il faut une minute avant qu'il en accumule assez pour faire du RTK.
-4. Vérifier que la balise prioritaire émet bien des messages d'observation (1004/1077/1012/1087) — certaines mountpoints Centipede diffusent uniquement la position 1005 et pas d'observations. Choisir une mountpoint avec un « stream » complet.
+### `_peek_rtcm_type` ne valide pas le CRC
+
+L'inspection se fait sur les 5 premiers octets de la trame, sans vérification de CRC. C'est volontaire — il s'agit uniquement de router, pas de valider. Le décodeur `RtcmDecoder` qui suit fait la vraie validation pour son propre usage.
 
 ### Hauteur d'antenne
 
-Inchangée par le patch. Toujours vérifier qu'elle n'est pas comptée deux fois (firmware UM980 + `config.yaml`) — voir le skill `nrtk-project`.
+Inchangée par les modes VRS. Toujours vérifier qu'elle n'est pas comptée deux fois (firmware UM980 + `config.yaml`) — voir le skill `nrtk-project`.
 
 ### Effet sur l'API REST/WebSocket
 
-Le `PositionResult` publié continue d'être celui calculé par le moteur VRS. Les clients (dashboard HTTP, app Android) voient donc la position « VRS télémétrie », pas la position « UM980 fixée ». Si on veut exposer la position réelle du UM980 aussi, il faudrait ajouter un champ `gnss_position` au `PositionResult` ou un endpoint dédié.
+Le `PositionResult` publié continue d'être celui calculé par le moteur VRS (interpolation IDW) quel que soit le mode. Les clients (dashboard HTTP, app Android) voient donc la position « VRS télémétrie », pas la position « UM980 fixée ». Si on veut exposer la position réelle du UM980 aussi, il faudrait ajouter un champ `gnss_position` au `PositionResult` ou un endpoint dédié.
 
-## Validation
+## Validation attendue
 
-Après application du patch :
+Après le patch, en conditions terrain :
 
-- `vrs.enabled: true` + `sensor.mock: false` → le UM980 doit passer en FLOAT puis FIX dans la minute après le démarrage, exactement comme en pont direct.
-- L'UI tkinter affiche la position du UM980 (depuis sa GGA) ; à côté, les champs `VRS Lat/Lon/Alt` montrent la position interpolée par le moteur VRS — c'est attendu qu'il y ait quelques cm/dm d'écart entre les deux.
-- Le dashboard `http://localhost:8080/` et l'API `http://localhost:8081/api/status` exposent le `PositionResult` du moteur VRS, donc avec la position « VRS télémétrie ».
-- Les logs `files/logs/nrtk_log_*.log` ne doivent plus contenir de messages d'erreur RTCM côté UM980.
+- **Hybride** (`pure_mode: false`) : le UM980 doit passer en FLOAT puis FIX dans la minute après le démarrage, comme en pont direct. L'UI tkinter affiche la position du UM980 ; à côté, `VRS Lat/Lon/Alt` montrent la position interpolée par le moteur — écart attendu de quelques cm/dm.
+- **VRS pure** (`pure_mode: true`) : le UM980 doit également atteindre FIX, mais après un délai un peu plus long (typiquement 30 s à 1 min) car les ambiguïtés repartent de zéro à chaque démarrage. La précision en altitude peut différer si l'interpolation à plusieurs balises est meilleure (ou moins bonne) que la mono-base.
+- **Logs** `files/logs/nrtk_log_*.log` : chercher la ligne « RTCM VRS construit (… bytes), N sats, max lock=Xs » à chaque époque pour vérifier que le lock time croît.
+
+Si le UM980 reste en SinglePoint en pure :
+
+1. Vérifier que les éphémérides sont bien forwardées : `_peek_rtcm_type` doit retourner 1019/1020 et le compteur de trames série doit augmenter.
+2. Vérifier le `station_id` dans les logs UM980 — il doit être stable entre 1005 et 1002.
+3. Tester le repli hybride pour isoler la cause (cf. « Bascule retour »).
+4. Voir aussi la section « Diagnostic » plus bas dans le skill `nrtk-project`.
+
+## Implémentation — pointeurs rapides
+
+- Encodage RTCM : `_to_signed_bits`, `_encode_lock_time_7b`, `build_vrs_rtcm_1005`, `build_vrs_rtcm_1002`, `build_vrs_rtcm_1004` (deprecated wrapper) dans [files/vrs_engine.py](files/vrs_engine.py).
+- Tracker lock time : `VrsEngine._lock_times`, `_update_lock_times`, `_last_epoch_time`, appel dans `_compute_epoch`.
+- Routage RTCM : `EPHEMERIS_RTCM_TYPES`, `_peek_rtcm_type`, branche `pure_mode` dans `_on_rtcm` et `_on_position_result` dans [files/main.py](files/main.py).
+- Config : section `vrs:` dans [files/config.yaml](files/config.yaml) avec `enabled`, `pure_mode`, `station_id`.
